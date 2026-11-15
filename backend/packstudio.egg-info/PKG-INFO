@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: packstudio
+Version: 0.1.0
+Summary: PackStudio — 包装印前工作台：刀版引擎 + ICC 色彩引擎 + PS 式画布
+License: MIT
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: Pillow>=11
+Requires-Dist: numpy>=2
+Requires-Dist: scipy>=1.14
+Requires-Dist: matplotlib>=3.10
+Requires-Dist: colour-science>=0.4.6
+Requires-Dist: pikepdf>=9.0
+Requires-Dist: Flask>=3.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"

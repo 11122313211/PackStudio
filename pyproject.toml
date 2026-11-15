@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "packstudio"
+version = "0.1.0"
+description = "PackStudio — 包装印前工作台：刀版引擎 + ICC 色彩引擎 + PS 式画布"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "Pillow>=11",
+    "numpy>=2",
+    "scipy>=1.14",
+    "matplotlib>=3.10",
+    "colour-science>=0.4.6",
+    "pikepdf>=9.0",
+    "Flask>=3.0",
+    "defusedxml>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

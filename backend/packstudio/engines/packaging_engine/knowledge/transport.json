@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "domain": "transport",
+  "name": "transport",
+  "title": "运输条件与堆码强度（ISTA 简化）",
+  "requires_manufacturer_validation": true,
+  "disclaimer": "本文件只提供简化估算框架与占位参数，不构成工程结论。任何堆码层数、抗压强度与运输验证都必须由厂商用实测数据或标准测试完成。",
+  "reference_standards": [
+    "ISTA 3A（包裹包裹件）",
+    "ISTA 3B（完整运输单元）",
+    "ISTA 3E（散装与单元载荷）",
+    "GB/T 4857.3 包装 运输包装件 静压力试验"
+  ],
+  "stacking": {
+    "method": "ISTA 简化静态堆码",
+    "description": "按实际仓储/运输堆码高度与单件承重做简化估算，必要时用实测抗压强度替换。",
+    "assumptions_placeholder": {
+      "stack_height_m": null,
+      "unit_height_m": null,
+      "layer_count": null,
+      "units_per_layer": null
+    },
+    "notes": "堆码层数需扣除托盘与箱间空隙；冷库/高温环境会改变纸板抗压表现。"
+  },
+  "compressive_strength_estimate": {
+    "unit": "N",
+    "formula": "F ≈ k * (H - h) * W * L",
+    "variables": {
+      "H": "堆码总高度（m）",
+      "h": "单件高度（m）",
+      "W": "箱宽（m）",
+      "L": "箱长（m）",
+      "k": "单位面积承压系数（N/m^2），需实测"
+    },
+    "k_default": null,
+    "placeholder": true,
+    "notes": "k 与纸板/塑胶结构、温湿度、含水率强相关；本文件不提供经验系数，必须实测。"
+  },
+  "placeholders": {
+    "stack_height_m": null,
+    "unit_height_m": null,
+    "layer_count": null,
+    "units_per_layer": null,
+    "box_perimeter_m": null,
+    "safety_factor": null,
+    "compressive_strength_n": null
+  },
+  "checks_template": [
+    {"id": "stacking_height_known", "label_zh": "已知堆码高度与层数"},
+    {"id": "compressive_strength_measured", "label_zh": "有实测抗压强度"},
+    {"id": "temperature_humidity_defined", "label_zh": "运输温湿度条件已定义"},
+    {"id": "drop_vibration_test", "label_zh": "完成跌落/振动测试"}
+  ],
+  "requires_manufacturer_validation": true
+}

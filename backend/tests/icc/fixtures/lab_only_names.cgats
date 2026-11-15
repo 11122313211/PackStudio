@@ -1,0 +1,22 @@
+﻿# 依 TECH-DESIGN 6.1 Fogra39L 目标值手写；仅 Lab 列，paper/C 含人为偏移
+# 用途：BOM/注释/空行容错、按 SAMPLE_ID 名称对齐、SAMPLE_NAME 文本列
+
+ORIGINATOR	"icc-toolkit fixtures"
+DESCRIPTOR	"Lab-only measurement, name-aligned to Fogra39"
+
+BEGIN_DATA_FORMAT
+SAMPLE_ID SAMPLE_NAME LAB_L LAB_A LAB_B
+END_DATA_FORMAT
+NUMBER_OF_SETS 10
+BEGIN_DATA
+paper "Paper white" 95.50 0.50 -1.50
+C "Cyan solid" 62.00 -32.00 -45.00
+M "Magenta solid" 48.00 74.00 -3.00
+Y "Yellow solid" 89.00 -5.00 93.00
+K "Black solid" 16.00 0.00 0.00
+CM "Blue overprint" 24.00 22.00 -46.00
+CY "Green overprint" 50.00 -65.00 27.00
+MY "Red overprint" 47.00 68.00 48.00
+CMY "Three-color CMY" 23.00 0.00 0.00
+EXTRA "Not in reference" 50.00 0.00 0.00
+END_DATA

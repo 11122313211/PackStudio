@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "domain": "tobacco",
+  "name": "structures",
+  "title": "烟包结构库",
+  "requires_manufacturer_validation": true,
+  "disclaimer": "以下尺寸与面板划分是行业典型参考，不是某品牌的实际规格；正式结构必须以厂商图纸与实物打样为准。",
+  "structures": [
+    {
+      "code": "tobacco.soft_pack",
+      "name_zh": "软包",
+      "aliases": ["软包", "软包小盒", "soft pack", "soft pack box"],
+      "panels": ["前片", "后片", "上片", "下片", "左侧片", "右侧片", "内衬纸/内框", "封签", "拉线"],
+      "typical_dimensions": {
+        "unit": "mm",
+        "length": 87,
+        "width": 54,
+        "height": 22,
+        "note": "20 支装软包典型值；实际以品牌规格为准"
+      },
+      "features": ["无刚性骨架", "靠内衬纸定型", "可平压节省仓储体积"],
+      "notes": "软包压平后恢复需要时间，叠放压力过大会造成永久压痕；装箱时需控制堆码层数。",
+      "requires_manufacturer_validation": true
+    },
+    {
+      "code": "tobacco.hard_box_hinge_lid",
+      "name_zh": "硬盒-翻盖",
+      "aliases": ["硬盒", "翻盖盒", "硬盒翻盖", "hinge lid", "flip top"],
+      "panels": ["盒身（侧片）", "盒身（底片）", "翻盖", "铰链", "内框", "内衬"],
+      "typical_dimensions": {
+        "unit": "mm",
+        "length": 88,
+        "width": 55,
+        "height": 22,
+        "note": "20 支装硬盒典型值；实际以品牌规格为准"
+      },
+      "features": ["刚性骨架", "翻盖一次开启", "可印后道工艺"],
+      "notes": "需验证开启力、铰链耐久与跌落后的结构完整性；翻盖与盒身色差、接缝是常见投诉点。",
+      "requires_manufacturer_validation": true
+    },
+    {
+      "code": "tobacco.hard_box_side_open",
+      "name_zh": "硬盒-侧开",
+      "aliases": ["侧开盒", "硬盒侧开", "side open", "side opening box"],
+      "panels": ["盒身（侧片）", "盒身（底片）", "侧开盖", "插舌", "内框", "内衬"],
+      "typical_dimensions": {
+        "unit": "mm",
+        "length": 88,
+        "width": 55,
+        "height": 22,
+        "note": "20 支装硬盒典型值；实际以品牌规格为准"
+      },
+      "features": ["刚性骨架", "侧面开启", "插舌锁合"],
+      "notes": "侧开结构需防误开，插舌需做开启疲劳测试；运输中插舌受振脱开是风险点。",
+      "requires_manufacturer_validation": true
+    },
+    {
+      "code": "tobacco.carton",
+      "name_zh": "条盒",
+      "aliases": ["条盒", "条包装", "carton", "master carton"],
+      "panels": ["大面×2", "端面×2", "顶面", "底面", "内隔板/衬垫"],
+      "typical_dimensions": {
+        "unit": "mm",
+        "length": 278,
+        "width": 168,
+        "height": 90,
+        "note": "10 小盒装条盒典型值；实际以品牌规格为准"
+      },
+      "features": ["堆码承载", "运输保护", "可带促销开口"],
+      "notes": "条盒承担堆码与运输保护，需做堆码强度与抗压测试；内隔板错位会导致小盒受压变形。",
+      "requires_manufacturer_validation": true
+    }
+  ]
+}

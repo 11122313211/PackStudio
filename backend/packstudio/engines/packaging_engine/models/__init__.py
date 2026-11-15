@@ -1,0 +1,31 @@
+from packstudio.engines.packaging_engine.models.ir import (
+    Dieline,
+    Dimensions,
+    Request,
+    StructureSpec,
+    ValidationReport,
+    CreaseSegment,
+    LAYER_BLEED,
+    LAYER_CREASE,
+    LAYER_CUT,
+    LAYER_GLUE,
+    LAYER_GUIDE,
+    LAYER_SAFETY,
+    LAYER_TEXT,
+)
+
+__all__ = [
+    "Dieline",
+    "Dimensions",
+    "Request",
+    "StructureSpec",
+    "ValidationReport",
+    "CreaseSegment",
+    "LAYER_BLEED",
+    "LAYER_CREASE",
+    "LAYER_CUT",
+    "LAYER_GLUE",
+    "LAYER_GUIDE",
+    "LAYER_SAFETY",
+    "LAYER_TEXT",
+]
