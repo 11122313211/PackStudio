@@ -230,3 +230,182 @@ def test_unknown_api_404(client):
     resp = client.get("/api/no_such_endpoint")
     assert resp.status_code == 404
     assert resp.get_json()["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 回归测试：工艺参数透传、CMYK 色彩链路、ΔE00 打样、安全防护与输出清理
+# ---------------------------------------------------------------------------
+
+
+def test_dieline_process_params_affect_geometry(client):
+    """前端顶层工艺参数（tuck_height/glue_width/shrink/bleed）必须真实影响展开几何，且兼容旧 parameters_mm。"""
+    base = client.post("/api/dieline", json=dict(_SPEC)).get_json()["data"]
+    bigger = client.post(
+        "/api/dieline",
+        json=dict(_SPEC, tuck_height=28.0, glue_width=24.0, shrink=0.5, bleed=5.0),
+    ).get_json()["data"]
+    assert bigger["net_size_mm"]["width"] > base["net_size_mm"]["width"] + 5.0
+    assert bigger["net_size_mm"]["height"] > base["net_size_mm"]["height"] + 5.0
+    assert bigger["metadata"]["parameters_mm"]["tuck_height"] == pytest.approx(28.0)
+    assert bigger["metadata"]["parameters_mm"]["glue_width"] == pytest.approx(24.0)
+    assert bigger["metadata"]["parameters_mm"]["bleed"] == pytest.approx(5.0)
+
+    # 向后兼容旧 parameters_mm 嵌套形式
+    nested = client.post(
+        "/api/dieline",
+        json=dict(_SPEC, parameters_mm={"tuck_height": 28.0, "glue_width": 24.0}),
+    ).get_json()["data"]
+    assert nested["net_size_mm"]["width"] == pytest.approx(bigger["net_size_mm"]["width"], abs=0.5)
+    assert nested["metadata"]["parameters_mm"]["tuck_height"] == pytest.approx(28.0)
+
+
+def test_fold_preview_forwards_params_and_preserves_error_code(client):
+    resp = client.get(
+        "/api/dieline/fold",
+        query_string={
+            "model_code": "carton.box_v2.straight",
+            "length": "120",
+            "width": "60",
+            "height": "90",
+            "tuck_height": "20",
+            "glue_width": "18",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/html"
+    assert b"/vendor/three.min.js" in resp.data
+
+    bad = client.get(
+        "/api/dieline/fold",
+        query_string={"model_code": "carton.box_v2.no_such", "length": "100", "width": "50", "height": "80"},
+    )
+    assert bad.status_code == 422
+    assert bad.get_json()["error"]["code"] == "STRUCTURE_NOT_IMPLEMENTED"
+
+
+def test_icc_proof_defaults_to_de00_and_supports_de76(client):
+    r_default = client.post(
+        "/api/icc/proof",
+        data={"file": (io.BytesIO(_png_bytes((20, 220, 40))), "snap.png")},
+        content_type="multipart/form-data",
+    )
+    assert r_default.status_code == 200
+    assert r_default.get_json()["data"]["stats"]["metric"] == "de00"
+
+    r_de76 = client.post(
+        "/api/icc/proof",
+        data={"file": (io.BytesIO(_png_bytes((20, 220, 40))), "snap.png"), "metric": "de76"},
+        content_type="multipart/form-data",
+    )
+    assert r_de76.status_code == 200
+    assert r_de76.get_json()["data"]["stats"]["metric"] == "de76"
+
+    r_bad = client.post(
+        "/api/icc/proof",
+        data={"file": (io.BytesIO(_png_bytes()), "snap.png"), "metric": "de99"},
+        content_type="multipart/form-data",
+    )
+    assert r_bad.status_code == 400
+    assert r_bad.get_json()["error"]["code"] == "INVALID_METRIC"
+
+
+def _find_system_cmyk_profile() -> str | None:
+    from packstudio.engines.color_engine.cmm import discovery
+
+    for p in discovery.scan_profiles():
+        if p.color_space.strip().upper() == "CMYK":
+            return p.path
+    return None
+
+
+def test_icc_lab_and_convert_with_cmyk_profile(client):
+    """CMYK 输出档案下取色与图层转档均应成功（取色返回 CMYK/TAC+Lab，转档输出 TIFF + sRGB 预览）。"""
+    cmyk_path = _find_system_cmyk_profile()
+    if not cmyk_path:
+        pytest.skip("系统未安装 CMYK ICC 档案，跳过 CMYK 集成测试")
+
+    # 1) 取色：sRGB → CMYK → Lab
+    lab_resp = client.post("/api/icc/lab", json={"rgb": [220, 40, 40], "profile": cmyk_path})
+    assert lab_resp.status_code == 200
+    lab_data = lab_resp.get_json()["data"]
+    assert lab_data["color_space"] == "CMYK"
+    assert len(lab_data["device_values"]) == 4
+    assert lab_data["tac"] is not None and 0.0 <= lab_data["tac"] <= 400.0
+    assert len(lab_data["lab"]) == 3
+
+    # 2) 转档：无嵌入 ICC 的 RGB PNG → CMYK 自动切换 TIFF + 返回 sRGB 预览 PNG
+    conv_resp = client.post(
+        "/api/icc/convert",
+        data={
+            "file": (io.BytesIO(_png_bytes((220, 40, 40))), "layer.png"),
+            "op": "convert",
+            "profile_path": cmyk_path,
+            "intent": "relative",
+            "out_format": "png",
+        },
+        content_type="multipart/form-data",
+    )
+    assert conv_resp.status_code == 200
+    conv_data = conv_resp.get_json()["data"]
+    assert conv_data["assumed_src_srgb"] is True
+    assert conv_data["color_space"] == "CMYK"
+    assert conv_data["filename"] == "converted.tif"
+    assert conv_data["preview"] is not None
+
+    tif_dl = client.get(f"/api/download/{conv_data['id']}/{conv_data['filename']}")
+    assert tif_dl.status_code == 200
+    assert Image.open(io.BytesIO(tif_dl.data)).mode == "CMYK"
+
+    prev_dl = client.get(f"/api/download/{conv_data['preview']['id']}/{conv_data['preview']['filename']}")
+    assert prev_dl.status_code == 200
+    assert prev_dl.data.startswith(b"\x89PNG")
+
+
+def test_icc_path_whitelist_and_local_origin_guard(client):
+    """阻断非 ICC 后缀与非白名单目录探测，并阻断跨站非本机 Origin 写请求。"""
+    from pathlib import Path
+
+    resp_ext = client.get("/api/icc/validate", query_string={"path": "not_an_icc.ini"})
+    assert resp_ext.status_code == 403
+    assert resp_ext.get_json()["error"]["code"] == "INVALID_PROFILE_PATH"
+
+    outside_icc = Path(__file__).resolve().parent / "fake.icc"
+    resp_dir = client.get("/api/icc/validate", query_string={"path": str(outside_icc)})
+    assert resp_dir.status_code == 403
+    assert resp_dir.get_json()["error"]["code"] == "INVALID_PROFILE_PATH"
+
+    resp_csrf = client.post(
+        "/api/icc/lab",
+        json={"rgb": [10, 20, 30]},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert resp_csrf.status_code == 403
+    assert resp_csrf.get_json()["error"]["code"] == "INVALID_ORIGIN"
+
+    resp_local = client.post(
+        "/api/icc/lab",
+        json={"rgb": [10, 20, 30]},
+        headers={"Origin": "http://127.0.0.1:5173"},
+    )
+    assert resp_local.status_code == 200
+
+
+def test_sweep_outputs_removes_expired_dirs(tmp_path, monkeypatch):
+    """验证 _sweep_outputs 清理过期生成物目录而保留新鲜目录。"""
+    import os
+    import time
+
+    from packstudio.api import common
+
+    monkeypatch.setattr(common, "_OUTPUT_DIR", tmp_path)
+    old_id = common.store_output("old.svg", b"<svg/>")
+    new_id = common.store_output("new.svg", b"<svg/>")
+
+    old_dir = tmp_path / old_id
+    past = time.time() - 7200
+    os.utime(old_dir, (past, past))
+
+    removed = common._sweep_outputs(force=True, ttl_seconds=3600)
+    assert removed == 1
+    assert not old_dir.exists()
+    assert (tmp_path / new_id).exists()

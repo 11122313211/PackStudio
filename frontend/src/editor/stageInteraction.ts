@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../store/editor";
 import { api } from "../lib/api";
+import { sampleArtworkPixel } from "./renderer";
 import type { Camera, Guide, Vec2 } from "./types";
-import { screenToWorld, zoomAt } from "./viewport";
+import { pointInRotatedLayer, screenToWorld, zoomAt } from "./viewport";
 
 type Drag =
   | { mode: "pan"; startScreen: Vec2; startCam: Camera }
-  | { mode: "move"; id: string; startWorld: Vec2; origin: Vec2 }
+  | { mode: "move"; id: string; startWorld: Vec2; origin: Vec2; snapshotted: boolean }
   | { mode: "measure"; startWorld: Vec2 }
   | { mode: "guide"; axis: "x" | "y" }
   | null;
@@ -44,7 +45,7 @@ export function useStageInteraction(canvasRef: React.RefObject<HTMLCanvasElement
         if (l.kind === "proof" || l.kind === "oog") {
           continue;
         }
-        if (world.x >= l.x && world.x <= l.x + l.w && world.y >= l.y && world.y <= l.y + l.h) {
+        if (pointInRotatedLayer(world, l)) {
           return l.id;
         }
       }
@@ -117,7 +118,13 @@ export function useStageInteraction(canvasRef: React.RefObject<HTMLCanvasElement
         if (id) {
           const layer = state.layers.find((l) => l.id === id);
           if (layer) {
-            dragRef.current = { mode: "move", id, startWorld: world, origin: { x: layer.x, y: layer.y } };
+            dragRef.current = {
+              mode: "move",
+              id,
+              startWorld: world,
+              origin: { x: layer.x, y: layer.y },
+              snapshotted: false,
+            };
           }
         }
         return;
@@ -128,25 +135,28 @@ export function useStageInteraction(canvasRef: React.RefObject<HTMLCanvasElement
         return;
       }
       if (state.tool === "eyedropper") {
-        const ctx = canvas.getContext("2d");
-        const rect = canvas.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
-        if (ctx) {
-          const px = ctx.getImageData(
-            Math.round(screen.x * dpr),
-            Math.round(screen.y * dpr),
-            1,
-            1,
-          ).data;
-          const rgb: [number, number, number] = [px[0], px[1], px[2]];
-          state.setPicked({ rgb, lab: null });
-          api
-            .lab(rgb, state.deviceProfilePath || undefined)
-            .then((r) => state.setPicked({ rgb, lab: r.lab }))
-            .catch(() => state.setPicked({ rgb, lab: null }));
-        }
-        void rect;
-        void dpr;
+        // 从离屏纯素材层取色，避免受打样/越界掩图/刀线/网格干扰
+        const rgb = sampleArtworkPixel(world, state.layers);
+        state.setPicked({ rgb, lab: null });
+        api
+          .lab(rgb, {
+            profile: state.deviceProfilePath || undefined,
+            intent: state.proofIntent,
+            bpc: state.proofBpc,
+          })
+          .then((r) =>
+            state.setPicked({
+              rgb,
+              lab: r.lab,
+              colorSpace: r.color_space,
+              deviceValues: r.device_values,
+              tac: r.tac,
+            }),
+          )
+          .catch((err) => {
+            state.setPicked({ rgb, lab: null });
+            state.toast(err instanceof Error ? err.message : "取色换算失败", "error");
+          });
       }
     };
 
@@ -170,6 +180,10 @@ export function useStageInteraction(canvasRef: React.RefObject<HTMLCanvasElement
         return;
       }
       if (drag.mode === "move") {
+        if (!drag.snapshotted) {
+          state.snapshot();
+          drag.snapshotted = true;
+        }
         const target = { x: drag.origin.x + (world.x - drag.startWorld.x), y: drag.origin.y + (world.y - drag.startWorld.y) };
         const snapped = snap(target, drag.id);
         state.updateLayer(drag.id, { x: snapped.x, y: snapped.y });
@@ -183,14 +197,6 @@ export function useStageInteraction(canvasRef: React.RefObject<HTMLCanvasElement
     };
 
     const finishDrag = () => {
-      const drag = dragRef.current;
-      const state = useEditor.getState();
-      if (drag?.mode === "move") {
-        state.snapshot();
-      }
-      if (drag?.mode === "measure") {
-        // 保留测量结果直到下次点击
-      }
       dragRef.current = null;
       setPanCursor(false);
     };

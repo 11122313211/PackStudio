@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from packstudio import __version__
@@ -39,9 +40,25 @@ except ImportError:  # pragma: no cover
     pass
 
 
+_LOCAL_ORIGIN_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = _MAX_CONTENT_LENGTH
+
+    @app.before_request
+    def _check_local_origin():
+        """本机 CSRF 防护：变更型请求若携带 Origin，仅放行本机来源。"""
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        origin = request.headers.get("Origin")
+        if not origin:
+            return None
+        parsed = urlparse(origin)
+        if parsed.scheme not in ("http", "https") or (parsed.hostname or "").lower() not in _LOCAL_ORIGIN_HOSTS:
+            return fail("INVALID_ORIGIN", "禁止非本机来源的跨站写请求。", status=403)
+        return None
 
     from packstudio.api import boxes, dieline, export, icc, pdf
 

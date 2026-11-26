@@ -2,7 +2,8 @@
 
 import { create } from "zustand";
 import { api } from "../lib/api";
-import type { ProfileInfo, PdfAuditReport, VerifyResponse } from "../lib/api";
+import type { ProfileInfo, PdfAuditReport, VerifyResponse, ProofResponse, ValidationInfo } from "../lib/api";
+import { buildStructurePayload } from "../lib/boxPayload";
 import type { StageId } from "../flow/stages";
 import type { ThemeName } from "../editor/theme";
 import type {
@@ -12,11 +13,11 @@ import type {
   LayerBase,
   MeasureState,
   ParsedDieline,
+  PickedColor,
   ToolKind,
 } from "../editor/types";
 import { uid } from "../editor/types";
 import { parseDielineSvg } from "../editor/svgparse";
-import type { ProofResponse, ValidationInfo } from "../lib/api";
 
 export interface Toast {
   id: string;
@@ -28,6 +29,8 @@ interface Snapshot {
   layers: LayerBase[];
   guides: Guide[];
 }
+
+export type ProofMetric = "de00" | "de76";
 
 export interface EditorState {
   /* 文档 */
@@ -60,34 +63,31 @@ export interface EditorState {
   proofIntent: string;
   proofBpc: boolean;
   proofThreshold: number;
+  proofMetric: ProofMetric;
   proofStats: ProofResponse["stats"] | null;
+  /** 素材/刀版/打样配置改动后，旧打样覆盖层是否已过期 */
+  proofStale: boolean;
+  /** 打样配置或内容改动后，旧 CGATS 测量报告是否已过期 */
+  verifyStale: boolean;
 
-  /* 取色（度量工具联动） */
-  picked: { rgb: [number, number, number]; lab: [number, number, number] | null } | null;
-  setPicked: (p: { rgb: [number, number, number]; lab: [number, number, number] | null } | null) => void;
+  /* 取色（吸管工具联动，含设备通道值/CMYK/TAC 与 Lab） */
+  picked: PickedColor | null;
+  setPicked: (p: PickedColor | null) => void;
 
-  /* 打样覆盖图（位图不进历史） */
+  /* 打样覆盖图（位图不进历史，替换时自动 close 释放显存） */
   proofImage: ImageBitmap | null;
   oogImage: ImageBitmap | null;
 
   /* UI（工作流五阶段 + 闭环数据 + 主题；不进 undo 快照） */
-  /** 当前激活阶段（五阶段软门控工作流，见 flow/stages.ts） */
   stage: StageId;
-  /** ② 自动 PDF 色彩审计报告（最新一次 PDF 导入） */
   audit: PdfAuditReport | null;
-  /** ④ CGATS 测量验证结果 */
   verifyReport: VerifyResponse | null;
-  /** ③ 系统扫描到的 ICC profile 库（ColorStage 首次进入时加载） */
   profiles: ProfileInfo[];
-  /** ⑤ 已导出次数（交付阶段完成度） */
   exportCount: number;
-  /** 界面主题（深色默认，localStorage 持久化，驱动 data-theme 与画布调色板） */
   theme: ThemeName;
   toasts: Toast[];
   busy: boolean;
-  /** 当前忙碌任务域（dieline/proof/export/import/audit/verify），供各阶段只显示自己的"…中"文案 */
   busyTask: string | null;
-  /** 适配窗口请求计数（CanvasStage 监听自增执行 fit） */
   fitRequest: number;
 
   /* 历史 */
@@ -106,7 +106,8 @@ export interface EditorState {
   generateDieline: () => Promise<void>;
 
   addLayer: (layer: LayerBase) => void;
-  updateLayer: (id: string, patch: Partial<LayerBase>) => void;
+  addLayers: (layers: LayerBase[]) => void;
+  updateLayer: (id: string, patch: Partial<LayerBase>, recordHistory?: boolean) => void;
   removeLayer: (id: string) => void;
   reorderLayer: (id: string, dir: -1 | 1) => void;
   select: (id: string | null) => void;
@@ -123,6 +124,7 @@ export interface EditorState {
     proofIntent?: string;
     proofBpc?: boolean;
     proofThreshold?: number;
+    proofMetric?: ProofMetric;
     proofStats?: ProofResponse["stats"] | null;
     proofImage?: ImageBitmap | null;
     oogImage?: ImageBitmap | null;
@@ -136,7 +138,7 @@ export interface EditorState {
   setStage: (stage: StageId) => void;
   setAudit: (audit: PdfAuditReport | null) => void;
   setVerifyReport: (report: VerifyResponse | null) => void;
-  loadProfiles: () => Promise<void>;
+  loadProfiles: (force?: boolean) => Promise<void>;
   markExported: () => void;
   setTheme: (theme: ThemeName) => void;
 
@@ -158,6 +160,14 @@ function takeSnapshot(state: EditorState): Snapshot {
   return {
     layers: state.layers.map((l) => ({ ...l })),
     guides: state.guides.map((g) => ({ ...g })),
+  };
+}
+
+/** 构造让旧打样与旧验证失效的局部状态补丁。 */
+function stalePatch(s: EditorState): Partial<EditorState> {
+  return {
+    proofStale: s.proofStats !== null ? true : s.proofStale,
+    verifyStale: s.verifyReport !== null ? true : s.verifyStale,
   };
 }
 
@@ -214,7 +224,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   proofIntent: "relative",
   proofBpc: true,
   proofThreshold: 4,
+  proofMetric: "de00",
   proofStats: null,
+  proofStale: false,
+  verifyStale: false,
   picked: null,
   proofImage: null,
   oogImage: null,
@@ -246,34 +259,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     const { boxSpec, toast, setBusy } = get();
     setBusy(true, "dieline");
     try {
-      const payload: Record<string, unknown> = {
-        model_code: boxSpec.model_code,
-        dimensions: {
-          length: boxSpec.length,
-          width: boxSpec.width,
-          height: boxSpec.height,
-          unit: "mm",
-        },
-      };
-      const params: Record<string, number> = {};
-      if (boxSpec.tuck_height != null) params.tuck_height = boxSpec.tuck_height;
-      if (boxSpec.glue_width != null) params.glue_width = boxSpec.glue_width;
-      if (boxSpec.shrink != null) params.shrink = boxSpec.shrink;
-      if (boxSpec.bleed != null) params.bleed = boxSpec.bleed;
-      if (Object.keys(params).length > 0) {
-        payload.parameters_mm = params;
-      }
+      const payload = buildStructurePayload(boxSpec);
       const data = await api.dieline(payload);
       const parsed = parseDielineSvg(data.svg);
-      set({
+      set((s) => ({
         dieline: parsed,
         dielineName: String(data.metadata.box_name_zh ?? data.metadata.box_type ?? ""),
         dielineEcma: String(data.metadata.ecma ?? ""),
         dielineFefco: String(data.metadata.fefco ?? ""),
         netSize: data.net_size_mm,
         validation: data.validation,
-      });
-      get().snapshot();
+        ...stalePatch(s),
+      }));
       toast(`已生成刀版：${get().dielineName}`, "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
@@ -283,56 +280,104 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   addLayer: (layer) => {
-    set((s) => ({ layers: [...s.layers, layer] }));
     get().snapshot();
+    set((s) => ({ layers: [...s.layers, layer], ...stalePatch(s) }));
   },
 
-  updateLayer: (id, patch) => {
+  addLayers: (newLayers) => {
+    if (newLayers.length === 0) {
+      return;
+    }
+    get().snapshot();
+    set((s) => ({ layers: [...s.layers, ...newLayers], ...stalePatch(s) }));
+  },
+
+  updateLayer: (id, patch, recordHistory = false) => {
+    if (recordHistory) {
+      get().snapshot();
+    }
     set((s) => ({
       layers: s.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+      ...stalePatch(s),
     }));
   },
 
   removeLayer: (id) => {
+    get().snapshot();
     set((s) => ({
       layers: s.layers.filter((l) => l.id !== id),
       selectionId: s.selectionId === id ? null : s.selectionId,
+      ...stalePatch(s),
     }));
-    get().snapshot();
   },
 
   reorderLayer: (id, dir) => {
+    const cur = get().layers;
+    const idx = cur.findIndex((l) => l.id === id);
+    const target = idx + dir;
+    if (idx < 0 || target < 0 || target >= cur.length) {
+      return;
+    }
+    get().snapshot();
     set((s) => {
-      const idx = s.layers.findIndex((l) => l.id === id);
-      const target = idx + dir;
-      if (idx < 0 || target < 0 || target >= s.layers.length) {
-        return s;
-      }
       const layers = [...s.layers];
       const [item] = layers.splice(idx, 1);
       layers.splice(target, 0, item);
-      return { layers };
+      return { layers, ...stalePatch(s) };
     });
-    get().snapshot();
   },
 
   select: (id) => set({ selectionId: id }),
 
   addGuide: (axis, pos) => {
-    set((s) => ({ guides: [...s.guides, { id: uid(), axis, pos }] }));
     get().snapshot();
+    set((s) => ({ guides: [...s.guides, { id: uid(), axis, pos }] }));
   },
   removeGuide: (id) => {
-    set((s) => ({ guides: s.guides.filter((g) => g.id !== id) }));
     get().snapshot();
+    set((s) => ({ guides: s.guides.filter((g) => g.id !== id) }));
   },
   clearGuides: () => {
-    set({ guides: [] });
     get().snapshot();
+    set({ guides: [] });
   },
   setMeasure: (patch) => set((s) => ({ measure: { ...s.measure, ...patch } })),
 
-  setProof: (patch) => set(patch),
+  setProof: (patch) =>
+    set((s) => {
+      // 显存回收：替换旧 ImageBitmap 时安全释放 GPU 句柄
+      if (patch.proofImage !== undefined && s.proofImage && s.proofImage !== patch.proofImage) {
+        try {
+          s.proofImage.close();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (patch.oogImage !== undefined && s.oogImage && s.oogImage !== patch.oogImage) {
+        try {
+          s.oogImage.close();
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const configChanged =
+        (patch.deviceProfilePath !== undefined && patch.deviceProfilePath !== s.deviceProfilePath) ||
+        (patch.proofIntent !== undefined && patch.proofIntent !== s.proofIntent) ||
+        (patch.proofBpc !== undefined && patch.proofBpc !== s.proofBpc) ||
+        (patch.proofThreshold !== undefined && patch.proofThreshold !== s.proofThreshold) ||
+        (patch.proofMetric !== undefined && patch.proofMetric !== s.proofMetric);
+
+      const next: Partial<EditorState> = { ...patch };
+      if (patch.proofStats !== undefined) {
+        // 新一轮软打样完成：打样自身刷新为最新，但若配置变了仍保留 verifyStale
+        next.proofStale = false;
+      } else if (configChanged) {
+        Object.assign(next, stalePatch(s));
+      }
+      return next;
+    }),
+
   setPicked: (picked) => set({ picked }),
 
   toast: (text, kind = "info") => {
@@ -346,16 +391,21 @@ export const useEditor = create<EditorState>((set, get) => ({
   /* 工作流与主题 */
   setStage: (stage) => set({ stage }),
   setAudit: (audit) => set({ audit }),
-  setVerifyReport: (verifyReport) => set({ verifyReport }),
-  loadProfiles: async () => {
-    if (get().profiles.length > 0) {
+  setVerifyReport: (verifyReport) => set({ verifyReport, verifyStale: false }),
+  loadProfiles: async (force = false) => {
+    if (!force && get().profiles.length > 0) {
       return;
     }
     try {
-      const d = await api.profiles();
+      const d = await api.profiles(force);
       set({ profiles: d.profiles });
+      if (force) {
+        get().toast(`已重新扫描系统 ICC：共 ${d.profiles.length} 个`, "ok");
+      }
     } catch {
-      /* 扫描失败保持空列表（后端未启动等），UI 显示空态 */
+      if (force) {
+        get().toast("扫描系统 ICC 失败，请确认后端已连接", "error");
+      }
     }
   },
   markExported: () => set((s) => ({ exportCount: s.exportCount + 1 })),
@@ -383,6 +433,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       layers: prev.layers,
       guides: prev.guides,
       selectionId: null,
+      ...stalePatch(s),
     }));
   },
 
@@ -398,6 +449,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       layers: next.layers,
       guides: next.guides,
       selectionId: null,
+      ...stalePatch(s),
     }));
   },
 

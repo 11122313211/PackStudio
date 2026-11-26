@@ -1,11 +1,11 @@
-/** ④ 打样验证：软打样模拟 + 越界掩图 + CGATS 测量 ΔE00 验证（色彩闭环的收敛环节）。
- *  超标时给出行动按钮回跳 ②/③ 修正，形成"模拟 → 测量 → 反馈修正"循环。 */
+/** ④ 打样验证：离屏软打样模拟 + 越界掩图 + CGATS 测量 ΔE00 验证（色彩闭环的收敛环节）。
+ *  超标或内容变更过期时给出行动按钮回跳 ②/③ 修正或重跑，形成"模拟 → 测量 → 反馈修正"闭环。 */
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useEditor } from "../store/editor";
 import { api, triggerDownload, type VerifyResponse } from "../lib/api";
-import { snapshotMainCanvas } from "../editor/canvasRegistry";
-import { contentBox } from "../editor/renderer";
+import { canvasToPngBlob } from "../editor/canvasRegistry";
+import { renderOffscreen } from "../editor/renderer";
 import { Icon } from "../components/icons";
 import { loopVerdict, useStageViews } from "../flow/stages";
 
@@ -23,7 +23,9 @@ export function ProofStage() {
   const proofIntent = useEditor((s) => s.proofIntent);
   const proofBpc = useEditor((s) => s.proofBpc);
   const proofThreshold = useEditor((s) => s.proofThreshold);
+  const proofMetric = useEditor((s) => s.proofMetric);
   const proofStats = useEditor((s) => s.proofStats);
+  const proofStale = useEditor((s) => s.proofStale);
   const proofVisible = useEditor((s) => s.proofVisible);
   const oogVisible = useEditor((s) => s.oogVisible);
   const proofImage = useEditor((s) => s.proofImage);
@@ -35,43 +37,41 @@ export function ProofStage() {
   const busyTask = useEditor((s) => s.busyTask);
 
   const run = async () => {
-    // 与 renderer.drawOverlays 同一内容盒定义：快照裁剪区域 = 覆盖层贴回区域
+    // 独立世界坐标离屏渲染：仅含纯白底 + 素材图层（不含刀线/网格/选框，且不受视口缩放平移裁切）
     const state = useEditor.getState();
-    const box = contentBox(
-      state.dieline,
-      state.layers.filter((l) => l.kind !== "proof" && l.kind !== "oog"),
-    );
-    if (box.w <= 0 || box.h <= 0) {
+    const off = renderOffscreen({
+      dieline: state.dieline,
+      layers: state.layers,
+      maxEdgePx: 2048,
+      includeDieline: false,
+    });
+    if (!off) {
       toast("画布尚未就绪", "error");
       return;
     }
-    const dpr = window.devicePixelRatio || 1;
-    const cam = state.camera;
-    const blob = await snapshotMainCanvas({
-      x: (box.x - cam.x) * cam.scale * dpr,
-      y: (box.y - cam.y) * cam.scale * dpr,
-      w: box.w * cam.scale * dpr,
-      h: box.h * cam.scale * dpr,
-    });
+    const blob = await canvasToPngBlob(off.canvas);
     if (!blob) {
-      toast("画布尚未就绪", "error");
+      toast("离屏快照编码失败", "error");
       return;
     }
     setBusy(true, "proof");
     try {
       const form = new FormData();
-      form.append("file", new File([blob], "canvas.png", { type: "image/png" }));
+      form.append("file", new File([blob], "artwork.png", { type: "image/png" }));
       if (deviceProfilePath) {
         form.append("device_profile", deviceProfilePath);
       }
       form.append("intent", proofIntent);
       form.append("bpc", String(proofBpc));
       form.append("oog_threshold", String(proofThreshold));
+      form.append("metric", proofMetric);
       const r = await api.proof(form);
       const [proofBmp, oogBmp] = await Promise.all([
-        (await fetch(api.downloadUrl(r.proof.id, r.proof.filename))).blob().then((b) => createImageBitmap(b)),
-        (await fetch(api.downloadUrl(r.out_of_gamut.id, r.out_of_gamut.filename)))
-          .blob()
+        fetch(api.downloadUrl(r.proof.id, r.proof.filename))
+          .then((resp) => resp.blob())
+          .then((b) => createImageBitmap(b)),
+        fetch(api.downloadUrl(r.out_of_gamut.id, r.out_of_gamut.filename))
+          .then((resp) => resp.blob())
           .then((b) => createImageBitmap(b)),
       ]);
       setProof({
@@ -80,8 +80,9 @@ export function ProofStage() {
         proofStats: r.stats,
         proofVisible: true,
       });
+      const metricTag = (r.stats.metric ?? proofMetric) === "de00" ? "ΔE00" : "ΔE76";
       toast(
-        `打样完成：越界 ${(r.stats.oog_ratio * 100).toFixed(2)}%（ΔE>${r.stats.threshold}）`,
+        `打样完成：越界 ${(r.stats.oog_ratio * 100).toFixed(2)}%（${metricTag}>${r.stats.threshold}）`,
         "ok",
       );
     } catch (err) {
@@ -91,6 +92,8 @@ export function ProofStage() {
     }
   };
 
+  const metricLabel = (proofStats?.metric ?? proofMetric) === "de00" ? "ΔE00" : "ΔE76";
+
   return (
     <>
       <div className={"loop-banner " + verdict}>
@@ -98,12 +101,17 @@ export function ProofStage() {
         <span className="loop-text">
           {verdict === "idle" && (
             <>
-              <b>色彩闭环未开始</b> — 运行软打样检查色域越界，再上传测量文件完成 ΔE00 验证。
+              <b>色彩闭环未开始</b> — 运行离屏软打样检查纯素材色域越界，再上传测量文件完成 ΔE00 验证。
             </>
           )}
           {verdict === "run" && (
             <>
               <b>已模拟，未测量</b> — 上传 CGATS 测量文件，对标 Fogra39 完成 ΔE00 判定。
+            </>
+          )}
+          {verdict === "stale" && (
+            <>
+              <b>{proofStale ? "软打样已过期" : "测量报告已过期"}</b> — 素材、刀版或色彩配置已改动，请重新运行验证后再交付。
             </>
           )}
           {verdict === "pass" && (
@@ -131,12 +139,18 @@ export function ProofStage() {
 
       <div className="row">
         <button className="primary" style={{ flex: 1 }} disabled={locked || busy} onClick={() => void run()}>
-          {busy && busyTask === "proof" ? "打样计算中…" : proofStats ? "重新打样（画布快照）" : "开始打样（画布快照）"}
+          {busy && busyTask === "proof"
+            ? "打样计算中…"
+            : proofStale
+              ? "重新打样（已过期）"
+              : proofStats
+                ? "重新打样（离屏素材）"
+                : "开始打样（离屏素材）"}
         </button>
       </div>
       <p className="hint">
-        意图 {INTENT_LABEL[proofIntent] ?? proofIntent} · 黑点补偿{proofBpc ? "开" : "关"} · 阈值 ΔE{proofThreshold}
-        （在 ③ 调整）
+        意图 {INTENT_LABEL[proofIntent] ?? proofIntent} · 黑点补偿{proofBpc ? "开" : "关"} · 阈值 {metricLabel}
+        {proofThreshold}（在 ③ 调整）
         {!deviceProfilePath ? " · 未选输出档案，以内置 sRGB 演示" : ""}
       </p>
 
@@ -144,18 +158,20 @@ export function ProofStage() {
         <>
           <div className="divider" />
           <div className="check-list">
-            <div className="check-item">
-              <span className="dot" style={{ background: "var(--accent)" }} />
+            <div className={"check-item" + (proofStale ? " warn" : "")}>
+              <span className="dot" style={{ background: proofStale ? "var(--warn)" : "var(--accent)" }} />
               <span className="cid">打样预览</span>
               <span className="cdetail">
-                {proofVisible ? "显示中" : "已隐藏"} · ΔE均值 {proofStats.delta_e_mean}
+                {proofVisible ? "显示中" : "已隐藏"} · {metricLabel} 均值 {proofStats.delta_e_mean}
+                {proofStale ? " · 已过期" : ""}
               </span>
             </div>
             <div className={"check-item " + (proofStats.oog_ratio > 0.02 ? "fail" : "pass")}>
               <span className="dot" />
               <span className="cid">越界像素</span>
               <span className="cdetail">
-                {proofStats.oog_count} 个（{(proofStats.oog_ratio * 100).toFixed(2)}%），最大 ΔE {proofStats.delta_e_max}
+                {proofStats.oog_count} 个（{(proofStats.oog_ratio * 100).toFixed(2)}%），最大 {metricLabel}{" "}
+                {proofStats.delta_e_max}
               </span>
             </div>
           </div>
@@ -177,7 +193,7 @@ export function ProofStage() {
               显示越界掩图
             </label>
           </div>
-          {proofImage ? <p className="hint">提示：修改素材后需重新打样（覆盖层是静态快照）。</p> : null}
+          <p className="hint">离屏仅对纯素材打样（不含刀版线与网格），不受缩放平移裁切。</p>
           <div className="row">
             <button
               className="small"
@@ -223,18 +239,27 @@ const INTENT_LABEL: Record<string, string> = {
 function VerifyCard({ disabled }: { disabled: boolean }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const verifyReport = useEditor((s) => s.verifyReport);
+  const verifyStale = useEditor((s) => s.verifyStale);
   const setVerifyReport = useEditor((s) => s.setVerifyReport);
   const deviceProfilePath = useEditor((s) => s.deviceProfilePath);
+  const proofIntent = useEditor((s) => s.proofIntent);
+  const proofBpc = useEditor((s) => s.proofBpc);
   const toast = useEditor((s) => s.toast);
   const setBusy = useEditor((s) => s.setBusy);
   const busy = useEditor((s) => s.busy);
   const busyTask = useEditor((s) => s.busyTask);
 
+  const [toleranceInput, setToleranceInput] = useState("");
+
   const run = async (file: File) => {
     setBusy(true, "verify");
     try {
+      const tol = toleranceInput.trim() ? Number(toleranceInput) : undefined;
       const r = await api.verifyCgats(file, {
         profilePath: deviceProfilePath || undefined,
+        intent: proofIntent,
+        bpc: proofBpc,
+        tolerance: tol != null && Number.isFinite(tol) && tol > 0 ? tol : undefined,
       });
       setVerifyReport(r);
       toast(
@@ -256,17 +281,41 @@ function VerifyCard({ disabled }: { disabled: boolean }) {
           测量验证
         </span>
         {verifyReport ? (
-          <span className={"badge " + (verifyReport.passed ? "ok" : verifyReport.verdict === "WARNING" ? "warn" : "bad")}>
-            {VERDICT_LABEL[verifyReport.verdict]}
+          <span
+            className={
+              "badge " +
+              (verifyStale
+                ? "warn"
+                : verifyReport.passed
+                  ? "ok"
+                  : verifyReport.verdict === "WARNING"
+                    ? "warn"
+                    : "bad")
+            }
+          >
+            {verifyStale ? "已过期" : VERDICT_LABEL[verifyReport.verdict]}
           </span>
         ) : (
           <span className="badge">未测量</span>
         )}
       </div>
       <p className="hint">
-        上传分光光度计导出的 CGATS.17 测量文件（含 LAB_L/A/B 列），对标 ISO 12647-2
-        Fogra39 九色目标判定；选择输出档案时同时给出档案推导参考。
+        上传分光光度计导出的 CGATS.17 测量文件（含 LAB_L/A/B 列），自动继承 ③ 的输出档案、渲染意图与黑点补偿对标 ISO
+        12647-2 Fogra39 判定。
       </p>
+      <div className="row">
+        <label style={{ flex: "0 0 auto" }}>容差覆盖 ΔE00</label>
+        <input
+          type="number"
+          min={0.5}
+          max={20}
+          step={0.5}
+          placeholder="默认 ISO"
+          value={toleranceInput}
+          onChange={(e) => setToleranceInput(e.target.value)}
+          style={{ width: 92, flex: "0 0 auto" }}
+        />
+      </div>
       <div className="row">
         <button className="primary" style={{ flex: 1 }} disabled={disabled} onClick={() => fileRef.current?.click()}>
           {busy && busyTask === "verify" ? "验证中…" : "上传测量文件（CGATS）"}
@@ -290,7 +339,7 @@ function VerifyCard({ disabled }: { disabled: boolean }) {
         <>
           <div className="check-list" style={{ marginTop: 6 }}>
             <div className="check-item pass">
-              <span className="dot" style={{ background: "var(--accent)" }} />
+              <span className="dot" style={{ background: verifyStale ? "var(--warn)" : "var(--accent)" }} />
               <span className="cid">ΔE00 统计</span>
               <span className="cdetail">
                 均值 {verifyReport.report.stats.mean.toFixed(2)} · 最大 {verifyReport.report.stats.max.toFixed(2)} ·

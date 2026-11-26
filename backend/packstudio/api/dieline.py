@@ -43,25 +43,41 @@ def render_one():
     )
 
 
+#: 3D 折叠预览允许通过 query 透传的可选工艺参数（mm）
+_OPTIONAL_MM_FIELDS = (
+    "tuck_height",
+    "glue_width",
+    "shrink",
+    "bleed",
+    "board_thickness",
+    "safe_margin",
+)
+
+
 @bp.get("/api/dieline/fold")
 def fold_preview():
     """3D 折叠预览（自包含 HTML，Three.js 走前端本地 /vendor/three.min.js）。"""
     payload = request.args
     try:
-        spec = StructureSpec.from_dict(
-            {
-                "model_code": payload.get("model_code", ""),
-                "dimensions": {
-                    "length": float(payload.get("length", 0)),
-                    "width": float(payload.get("width", 0)),
-                    "height": float(payload.get("height", 0)),
-                    "unit": "mm",
-                },
-            }
-        )
-        dieline = render(spec)
-    except Exception as exc:  # noqa: BLE001 - 引擎稳定码已在错误处理器透出
-        raise ApiError("FOLD_PREVIEW_FAILED", f"折叠预览失败：{exc}", status=422) from exc
+        spec_dict: dict[str, object] = {
+            "model_code": payload.get("model_code", ""),
+            "dimensions": {
+                "length": float(payload.get("length", 0)),
+                "width": float(payload.get("width", 0)),
+                "height": float(payload.get("height", 0)),
+                "unit": "mm",
+            },
+        }
+        for key in _OPTIONAL_MM_FIELDS:
+            raw = payload.get(key)
+            if raw is not None and raw.strip() != "":
+                spec_dict[key] = float(raw)
+    except ValueError as exc:
+        raise ApiError("INVALID_REQUEST", f"尺寸或工艺参数格式非法：{exc}", status=400) from exc
+
+    # 引擎稳定错误码（PackagingError）交由 app.py 统一 422 透出，不再吞掉
+    spec = StructureSpec.from_dict(spec_dict)
+    dieline = render(spec)
     html = dieline_to_preview_html(dieline, spec)
     # 离线化：three.js 改走前端打包的本地副本
     html = html.replace(

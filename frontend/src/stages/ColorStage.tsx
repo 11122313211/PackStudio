@@ -24,6 +24,7 @@ export function ColorStage() {
   const proofIntent = useEditor((s) => s.proofIntent);
   const proofBpc = useEditor((s) => s.proofBpc);
   const proofThreshold = useEditor((s) => s.proofThreshold);
+  const proofMetric = useEditor((s) => s.proofMetric);
   const setProof = useEditor((s) => s.setProof);
   const picked = useEditor((s) => s.picked);
   const busy = useEditor((s) => s.busy);
@@ -60,6 +61,14 @@ export function ColorStage() {
           <option value="scnr">扫描仪</option>
           <option value="spac">色彩空间</option>
         </select>
+        <button
+          className="small ghost"
+          disabled={busy}
+          title="强制重新扫描系统 ICC 目录"
+          onClick={() => void loadProfiles(true)}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
       </div>
 
       <div className="profile-list">
@@ -115,24 +124,45 @@ export function ColorStage() {
           onChange={(e) => setProof({ proofThreshold: Number(e.target.value) || 4 })}
         />
       </div>
+      <div className="row">
+        <label>色差口径</label>
+        <select
+          value={proofMetric}
+          onChange={(e) => setProof({ proofMetric: e.target.value as "de00" | "de76" })}
+          aria-label="打样色差口径"
+        >
+          <option value="de00">ΔE00（CIEDE2000，与测量验证一致）</option>
+          <option value="de76">ΔE76（欧氏距离兼容）</option>
+        </select>
+      </div>
 
       <div className="divider" />
-      <p className="hint">取色（工具列 💧 或按 I）</p>
+      <p className="hint" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <Icon name="eyedropper" size={12} /> 取色（工具列吸管或按 I）
+      </p>
       {picked ? (
-        <div className="row">
+        <div className="row" style={{ alignItems: "flex-start" }}>
           <span
             className="swatch"
             style={{ background: `rgb(${picked.rgb[0]},${picked.rgb[1]},${picked.rgb[2]})` }}
           />
-          <span className="hint" style={{ margin: 0 }}>
-            RGB {picked.rgb.join(", ")}
+          <span className="hint" style={{ margin: 0, lineHeight: 1.5 }}>
+            sRGB {picked.rgb.join(", ")}
+            {picked.colorSpace === "CMYK" && picked.deviceValues?.length === 4 ? (
+              <>
+                <br />
+                CMYK {picked.deviceValues.map((v) => `${v.toFixed(0)}%`).join(" / ")}
+                {picked.tac != null ? `（TAC ${picked.tac.toFixed(0)}%）` : ""}
+              </>
+            ) : null}
+            <br />
             {picked.lab
-              ? ` → L*${picked.lab[0].toFixed(1)} a*${picked.lab[1].toFixed(1)} b*${picked.lab[2].toFixed(1)}`
-              : " → 换算中…"}
+              ? `L*${picked.lab[0].toFixed(1)} a*${picked.lab[1].toFixed(1)} b*${picked.lab[2].toFixed(1)}`
+              : "换算中…"}
           </span>
         </div>
       ) : (
-        <p className="hint">用取色工具点击画布任意位置，读取该像素的 RGB 与 Lab。</p>
+        <p className="hint">用取色工具点击画布任意素材位置，读取原稿 RGB、输出设备通道值与 Lab。</p>
       )}
       {busy && busyTask === "validate" ? <p className="hint">档案体检中…</p> : null}
     </>

@@ -120,6 +120,8 @@ export interface ProofResponse {
     delta_e_max: number;
     delta_e_mean: number;
     threshold: number;
+    metric?: "de00" | "de76";
+    scaled?: boolean;
   };
 }
 
@@ -137,7 +139,17 @@ export interface ConvertReport {
 export interface ConvertResponse {
   id: string;
   filename: string;
+  color_space?: string;
+  assumed_src_srgb?: boolean;
+  preview?: { id: string; filename: string } | null;
   report: ConvertReport;
+}
+
+export interface LabResponse {
+  lab: [number, number, number];
+  color_space?: string;
+  device_values?: number[];
+  tac?: number | null;
 }
 
 export interface PdfAuditReport {
@@ -235,10 +247,19 @@ export const api = {
 
   downloadUrl: (id: string, filename: string) => `/api/download/${id}/${encodeURIComponent(filename)}`,
 
-  profiles: () => request<{ profiles: ProfileInfo[] }>("/api/icc/profiles"),
+  profiles: (refresh = false) =>
+    request<{ profiles: ProfileInfo[] }>(refresh ? "/api/icc/profiles?refresh=1" : "/api/icc/profiles"),
 
-  lab: (rgb: [number, number, number], profile?: string) =>
-    request<{ lab: [number, number, number] }>("/api/icc/lab", json({ rgb, profile })),
+  lab: (
+    rgb: [number, number, number],
+    opts?: string | { profile?: string; intent?: string; bpc?: boolean },
+  ) => {
+    const body =
+      typeof opts === "string"
+        ? { rgb, profile: opts }
+        : { rgb, profile: opts?.profile, intent: opts?.intent, bpc: opts?.bpc };
+    return request<LabResponse>("/api/icc/lab", json(body));
+  },
 
   proof: (form: FormData) => request<ProofResponse>("/api/icc/proof", { method: "POST", body: form }),
 
@@ -256,11 +277,23 @@ export const api = {
     request<ValidateResponse>(`/api/icc/validate?path=${encodeURIComponent(path)}`),
 
   /** CGATS 测量验证（闭环④）：ΔE00 统计 + ISO 12647-2/Fogra39 判定。 */
-  verifyCgats: (file: File, opts: { profilePath?: string; tolerance?: number } = {}) => {
+  verifyCgats: (
+    file: File,
+    opts: { profilePath?: string; intent?: string; bpc?: boolean; reference?: string; tolerance?: number } = {},
+  ) => {
     const form = new FormData();
     form.append("file", file);
     if (opts.profilePath) {
       form.append("profile_path", opts.profilePath);
+    }
+    if (opts.intent) {
+      form.append("intent", opts.intent);
+    }
+    if (opts.bpc != null) {
+      form.append("bpc", String(opts.bpc));
+    }
+    if (opts.reference) {
+      form.append("reference", opts.reference);
     }
     if (opts.tolerance != null) {
       form.append("tolerance", String(opts.tolerance));

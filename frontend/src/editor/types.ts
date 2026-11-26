@@ -17,6 +17,20 @@ export interface Vec2 {
 
 export type LayerKind = "image" | "pdf" | "proof" | "oog";
 
+export interface ConvertedOutput {
+  id: string;
+  filename: string;
+  colorSpace: string;
+}
+
+export interface PickedColor {
+  rgb: [number, number, number];
+  lab: [number, number, number] | null;
+  colorSpace?: string;
+  deviceValues?: number[];
+  tac?: number | null;
+}
+
 export interface LayerBase {
   id: string;
   name: string;
@@ -32,6 +46,8 @@ export interface LayerBase {
   locked: boolean;
   /** 位图句柄不参与历史快照 */
   bitmap: ImageBitmap | HTMLImageElement | null;
+  /** 若该图层由 ICC 转换生成，关联后端真实色彩文件（如 CMYK TIFF）下载信息 */
+  convertedOutput?: ConvertedOutput;
 }
 
 export interface DielineSegment {

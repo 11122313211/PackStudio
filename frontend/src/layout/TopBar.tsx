@@ -8,10 +8,13 @@ import { Icon } from "../components/icons";
 export function TopBar() {
   const docName = useEditor((s) => (s.dielineName ? `未命名包装 · ${s.dielineName}` : "未命名包装"));
   const zoom = useEditor((s) => s.camera.scale);
+  const canUndo = useEditor((s) => s.past.length > 0);
+  const canRedo = useEditor((s) => s.future.length > 0);
+  const dieline = useEditor((s) => s.dieline);
   const undo = useEditor((s) => s.undo);
   const redo = useEditor((s) => s.redo);
   const toast = useEditor((s) => s.toast);
-  const addLayer = useEditor((s) => s.addLayer);
+  const addLayers = useEditor((s) => s.addLayers);
   const setAudit = useEditor((s) => s.setAudit);
   const setBusy = useEditor((s) => s.setBusy);
   const setStage = useEditor((s) => s.setStage);
@@ -25,7 +28,7 @@ export function TopBar() {
   const onFiles = (files: FileList | null) => {
     // 导入动作归属闭环②：跳转到素材与审计阶段，审计结果就地呈现
     setStage("content");
-    void importFiles(files, { addLayer, setBusy, setAudit, toast });
+    void importFiles(files, { addLayers, dieline, setBusy, setAudit, toast });
     if (fileRef.current) {
       fileRef.current.value = "";
     }
@@ -49,10 +52,10 @@ export function TopBar() {
         hidden
         onChange={(e) => onFiles(e.target.files)}
       />
-      <button className="icon-btn-top" onClick={undo} title="撤销 (Ctrl+Z)" aria-label="撤销">
+      <button className="icon-btn-top" onClick={undo} disabled={!canUndo} title="撤销 (Ctrl+Z)" aria-label="撤销">
         <Icon name="undo" size={15} />
       </button>
-      <button className="icon-btn-top" onClick={redo} title="重做 (Ctrl+Shift+Z)" aria-label="重做">
+      <button className="icon-btn-top" onClick={redo} disabled={!canRedo} title="重做 (Ctrl+Shift+Z)" aria-label="重做">
         <Icon name="redo" size={15} />
       </button>
       <div className="zoom-box">

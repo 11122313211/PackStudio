@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -36,8 +37,27 @@ def fail(code: str, message: str, *, status: int = 400, detail: dict | None = No
 _ID_PATTERN = re.compile(r"^[a-z0-9]{8,32}$")
 _UPLOAD_DIR = Path(tempfile.gettempdir()) / "packstudio_uploads"
 _OUTPUT_DIR = Path(tempfile.gettempdir()) / "packstudio_outputs"
-#: 孤儿上传清理阈值
+#: 孤儿上传与导出生成物的清理阈值（6 小时）
 _UPLOAD_TTL_SECONDS = 6 * 3600
+_OUTPUT_TTL_SECONDS = 6 * 3600
+#: 输出目录清理节流间隔（避免高频写入重复遍历目录）
+_SWEEP_INTERVAL_SECONDS = 300.0
+_last_output_sweep: float = 0.0
+
+#: 图像转换接口允许的输出扩展名白名单
+ALLOWED_IMAGE_OUT_FORMATS: frozenset[str] = frozenset({"tif", "tiff", "png", "jpg", "jpeg"})
+
+
+def validate_out_format(raw: str | None, default: str = "tif") -> str:
+    """校验并返回规范化的图像输出格式（小写，无前导点）。"""
+    fmt = (raw or default).strip().lower().lstrip(".")
+    if fmt not in ALLOWED_IMAGE_OUT_FORMATS:
+        raise ApiError(
+            "INVALID_FORMAT",
+            f"不支持的图像输出格式：{raw}",
+            detail={"supported": sorted(ALLOWED_IMAGE_OUT_FORMATS)},
+        )
+    return fmt
 
 
 def _new_id() -> str:
@@ -64,6 +84,7 @@ def save_bytes(data: bytes, suffix: str = "") -> Path:
 def store_output(name: str, data: bytes) -> str:
     """生成物落盘 outputs/<id>/<name>，返回下载 id。"""
     _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _sweep_outputs()
     output_id = _new_id()
     target = _output_dir_for(output_id, name)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -106,3 +127,30 @@ def _sweep_uploads() -> None:
                 continue
     except OSError:
         pass
+
+
+def _sweep_outputs(*, force: bool = False, ttl_seconds: float | None = None) -> int:
+    """尽力清理过期的生成物目录（不抛错），返回本次删除的目录数。"""
+    global _last_output_sweep
+    now = time.time()
+    if not force and now - _last_output_sweep < _SWEEP_INTERVAL_SECONDS:
+        return 0
+    _last_output_sweep = now
+    ttl = _OUTPUT_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+    removed = 0
+    try:
+        if not _OUTPUT_DIR.is_dir():
+            return 0
+        for entry in _OUTPUT_DIR.iterdir():
+            try:
+                if now - entry.stat().st_mtime > ttl:
+                    if entry.is_dir():
+                        shutil.rmtree(entry, ignore_errors=True)
+                    else:
+                        entry.unlink(missing_ok=True)
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed

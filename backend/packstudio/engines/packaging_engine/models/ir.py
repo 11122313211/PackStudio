@@ -116,17 +116,24 @@ class StructureSpec:
             "glue_width",
             "material",
             "output_mode",
+            "parameters_mm",
         }
+        nested = data.get("parameters_mm") if isinstance(data.get("parameters_mm"), dict) else {}
+
+        def _param(name: str, default: float) -> float:
+            raw = data.get(name, nested.get(name, default))
+            return float(default if raw is None else raw)
+
         extras = {k: v for k, v in data.items() if k not in known}
         return cls(
             model_code=model_code,
             dimensions=Dimensions.from_dict(data["dimensions"]),
-            board_thickness=float(data.get("board_thickness", 0.3)),
-            bleed=float(data.get("bleed", 3.0)),
-            safe_margin=float(data.get("safe_margin", 3.0)),
-            shrink=float(data.get("shrink", 0.5)),
-            tuck_height=float(data.get("tuck_height", 12.0)),
-            glue_width=float(data.get("glue_width", 11.0)),
+            board_thickness=_param("board_thickness", 0.3),
+            bleed=_param("bleed", 3.0),
+            safe_margin=_param("safe_margin", 3.0),
+            shrink=_param("shrink", 0.5),
+            tuck_height=_param("tuck_height", 12.0),
+            glue_width=_param("glue_width", 11.0),
             material=str(data.get("material", "")),
             output_mode=str(data.get("output_mode", "DESIGN_TEMPLATE")),
             extras=extras,

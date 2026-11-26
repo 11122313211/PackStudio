@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useEditor } from "../store/editor";
 import { api, type BoxChoice, type BoxReportItem } from "../lib/api";
+import { buildFoldPreviewUrl } from "../lib/boxPayload";
 import { Icon } from "../components/icons";
 import { PT_PER_MM } from "../editor/types";
 
@@ -38,13 +39,7 @@ export function StructureStage() {
   const fmt = (mm: number) => (units === "pt" ? `${(mm * PT_PER_MM).toFixed(1)} pt` : `${mm.toFixed(1)} mm`);
 
   const openFold = () => {
-    const q = new URLSearchParams({
-      model_code: boxSpec.model_code,
-      length: String(boxSpec.length),
-      width: String(boxSpec.width),
-      height: String(boxSpec.height),
-    });
-    window.open(`/api/dieline/fold?${q.toString()}`, "_blank");
+    window.open(buildFoldPreviewUrl(boxSpec), "_blank");
   };
 
   return (

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useEditor } from "../store/editor";
-import { api, type PdfAuditReport } from "../lib/api";
+import { api, triggerDownload, type PdfAuditReport } from "../lib/api";
 import { importFiles } from "../editor/importFiles";
 import { toLayer } from "../editor/importers";
 import type { LayerBase } from "../editor/types";
@@ -22,13 +22,14 @@ export function ContentStage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const busy = useEditor((s) => s.busy);
   const audit = useEditor((s) => s.audit);
-  const addLayer = useEditor((s) => s.addLayer);
+  const dieline = useEditor((s) => s.dieline);
+  const addLayers = useEditor((s) => s.addLayers);
   const setAudit = useEditor((s) => s.setAudit);
   const setBusy = useEditor((s) => s.setBusy);
   const toast = useEditor((s) => s.toast);
 
   const onFiles = (files: FileList | null) => {
-    void importFiles(files, { addLayer, setBusy, setAudit, toast });
+    void importFiles(files, { addLayers, dieline, setBusy, setAudit, toast });
     if (fileRef.current) {
       fileRef.current.value = "";
     }
@@ -185,7 +186,7 @@ function LayerList() {
               title={l.visible ? "隐藏" : "显示"}
               onClick={(e) => {
                 e.stopPropagation();
-                updateLayer(l.id, { visible: !l.visible });
+                updateLayer(l.id, { visible: !l.visible }, true);
               }}
             >
               <Icon name={l.visible ? "eye" : "eye-off"} size={13} />
@@ -193,7 +194,7 @@ function LayerList() {
             <span className="lname" title={l.name}>
               {l.name}
             </span>
-            <span className="lkind">{KIND_LABEL[l.kind] ?? l.kind}</span>
+            <span className="lkind">{l.convertedOutput?.colorSpace || KIND_LABEL[l.kind] || l.kind}</span>
             <input
               type="range"
               min={0}
@@ -201,6 +202,7 @@ function LayerList() {
               value={Math.round(l.opacity * 100)}
               title={`不透明度 ${Math.round(l.opacity * 100)}%`}
               onClick={(e) => e.stopPropagation()}
+              onPointerDown={() => useEditor.getState().snapshot()}
               onChange={(e) => updateLayer(l.id, { opacity: Number(e.target.value) / 100 })}
             />
             <button
@@ -208,7 +210,7 @@ function LayerList() {
               title={l.locked ? "解锁" : "锁定"}
               onClick={(e) => {
                 e.stopPropagation();
-                updateLayer(l.id, { locked: !l.locked });
+                updateLayer(l.id, { locked: !l.locked }, true);
               }}
             >
               <Icon name={l.locked ? "lock" : "unlock"} size={13} />
@@ -261,9 +263,10 @@ function LayerProps({
   onChange,
 }: {
   layer: LayerBase;
-  onChange: (id: string, patch: Partial<LayerBase>) => void;
+  onChange: (id: string, patch: Partial<LayerBase>, recordHistory?: boolean) => void;
 }) {
   const num = (v: string) => Number(v) || 0;
+  const snap = () => useEditor.getState().snapshot();
   return (
     <>
       <div className="divider" />
@@ -271,29 +274,46 @@ function LayerProps({
       <div className="grid2">
         <div className="field">
           <span>X</span>
-          <input type="number" step={0.5} value={Math.round(layer.x * 100) / 100} onChange={(e) => onChange(layer.id, { x: num(e.target.value) })} />
+          <input type="number" step={0.5} value={Math.round(layer.x * 100) / 100} onFocus={snap} onChange={(e) => onChange(layer.id, { x: num(e.target.value) })} />
         </div>
         <div className="field">
           <span>Y</span>
-          <input type="number" step={0.5} value={Math.round(layer.y * 100) / 100} onChange={(e) => onChange(layer.id, { y: num(e.target.value) })} />
+          <input type="number" step={0.5} value={Math.round(layer.y * 100) / 100} onFocus={snap} onChange={(e) => onChange(layer.id, { y: num(e.target.value) })} />
         </div>
         <div className="field">
           <span>宽 W</span>
-          <input type="number" step={0.5} min={0.1} value={Math.round(layer.w * 100) / 100} onChange={(e) => onChange(layer.id, { w: Math.max(0.1, num(e.target.value)) })} />
+          <input type="number" step={0.5} min={0.1} value={Math.round(layer.w * 100) / 100} onFocus={snap} onChange={(e) => onChange(layer.id, { w: Math.max(0.1, num(e.target.value)) })} />
         </div>
         <div className="field">
           <span>高 H</span>
-          <input type="number" step={0.5} min={0.1} value={Math.round(layer.h * 100) / 100} onChange={(e) => onChange(layer.id, { h: Math.max(0.1, num(e.target.value)) })} />
+          <input type="number" step={0.5} min={0.1} value={Math.round(layer.h * 100) / 100} onFocus={snap} onChange={(e) => onChange(layer.id, { h: Math.max(0.1, num(e.target.value)) })} />
         </div>
         <div className="field">
           <span>旋转 (°)</span>
-          <input type="number" step={1} value={layer.rotation} onChange={(e) => onChange(layer.id, { rotation: num(e.target.value) })} />
+          <input type="number" step={1} value={layer.rotation} onFocus={snap} onChange={(e) => onChange(layer.id, { rotation: num(e.target.value) })} />
         </div>
         <div className="field">
           <span>不透明度 (0–1)</span>
-          <input type="number" step={0.05} min={0} max={1} value={layer.opacity} onChange={(e) => onChange(layer.id, { opacity: Math.min(1, Math.max(0, num(e.target.value))) })} />
+          <input type="number" step={0.05} min={0} max={1} value={layer.opacity} onFocus={snap} onChange={(e) => onChange(layer.id, { opacity: Math.min(1, Math.max(0, num(e.target.value))) })} />
         </div>
       </div>
+      {layer.convertedOutput ? (
+        <div className="row" style={{ marginTop: 6 }}>
+          <button
+            className="small ghost"
+            style={{ flex: 1 }}
+            onClick={() =>
+              triggerDownload(
+                api.downloadUrl(layer.convertedOutput!.id, layer.convertedOutput!.filename),
+                layer.convertedOutput!.filename,
+              )
+            }
+          >
+            <Icon name="share" size={12} /> 下载真实 {layer.convertedOutput.colorSpace || "ICC"} 文件（
+            {layer.convertedOutput.filename}）
+          </button>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -304,6 +324,7 @@ function LayerColorOps({ layer }: { layer: LayerBase }) {
   const profiles = useEditor((s) => s.profiles);
   const loadProfiles = useEditor((s) => s.loadProfiles);
   const addLayer = useEditor((s) => s.addLayer);
+  const proofBpc = useEditor((s) => s.proofBpc);
   const setBusy = useEditor((s) => s.setBusy);
   const busy = useEditor((s) => s.busy);
   const busyTask = useEditor((s) => s.busyTask);
@@ -314,13 +335,16 @@ function LayerColorOps({ layer }: { layer: LayerBase }) {
   const [intent, setIntent] = useState("relative");
 
   const usable = profiles.filter((p) => p.color_space.trim() !== "");
+  const chosen = usable.find((p) => p.path === profilePath);
+  const targetIsCmyk = (chosen?.color_space.trim().toUpperCase() ?? "") === "CMYK";
+
   const run = async () => {
     if (!layer.bitmap || !profilePath) {
       return;
     }
     setBusy(true, "convert");
     try {
-      // ImageBitmap → PNG 上传（/api/icc/convert 接受 png）
+      // ImageBitmap → PNG 上传（无嵌入 ICC 的 RGB 图后端自动按 sRGB 源处理）
       const c = document.createElement("canvas");
       c.width = layer.bitmap.width;
       c.height = layer.bitmap.height;
@@ -338,24 +362,41 @@ function LayerColorOps({ layer }: { layer: LayerBase }) {
       form.append("op", op);
       form.append("profile_path", profilePath);
       form.append("intent", intent);
-      form.append("out_format", "png");
+      form.append("bpc", String(proofBpc));
+      // CMYK 转换自动写出无损 TIFF（由后端同时返回 sRGB 预览 PNG 回填画布）
+      form.append("out_format", op === "convert" && targetIsCmyk ? "tif" : "png");
       const r = await api.convert(form);
       if (!r.report.ok) {
         throw new Error(r.report.message || "转换失败");
       }
-      // 转换结果作为新图层落回画布（原图层保留可对比）
-      const dl = await fetch(api.downloadUrl(r.id, r.filename));
+      const previewRef = r.preview ?? { id: r.id, filename: r.filename };
+      const dl = await fetch(api.downloadUrl(previewRef.id, previewRef.filename));
+      if (!dl.ok) {
+        throw new Error(`加载转换预览失败（HTTP ${dl.status}）`);
+      }
       const outBitmap = await createImageBitmap(await dl.blob());
       const newLayer = toLayer({
         bitmap: outBitmap,
         wmm: layer.w,
         hmm: layer.h,
-        name: `${layer.name} · ${op === "assign" ? "赋档" : op === "embed" ? "嵌档" : "转换"}`,
+        name: `${layer.name} · ${op === "assign" ? "赋档" : op === "embed" ? "嵌档" : r.color_space ? `转 ${r.color_space}` : "转换"}`,
       });
       newLayer.x = layer.x;
       newLayer.y = layer.y;
+      newLayer.rotation = layer.rotation;
+      newLayer.convertedOutput = {
+        id: r.id,
+        filename: r.filename,
+        colorSpace: r.color_space || chosen?.color_space.trim() || "",
+      };
       addLayer(newLayer);
-      toast(`ICC ${op === "assign" ? "赋档" : op === "embed" ? "嵌档" : "转换"}完成 → 新图层已加入`, "ok");
+      const extraHint =
+        r.color_space === "CMYK"
+          ? "（已生成真 CMYK TIFF 供下载 + sRGB 预览图层）"
+          : r.assumed_src_srgb
+            ? "（源图无嵌入档案，已按 sRGB 转换）"
+            : "";
+      toast(`ICC ${op === "assign" ? "赋档" : op === "embed" ? "嵌档" : "转换"}完成${extraHint}`, "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
@@ -366,7 +407,7 @@ function LayerColorOps({ layer }: { layer: LayerBase }) {
   return (
     <>
       <div className="divider" />
-      <p className="hint">图层 ICC 操作（结果作为新图层加入，原图层保留）</p>
+      <p className="hint">图层 ICC 操作（结果作为新图层加入，原图层保留；CMYK 转换自动保存 TIFF 并附画布预览）</p>
       <div className="row">
         <select value={op} onChange={(e) => setOp(e.target.value as typeof op)} aria-label="ICC 操作">
           <option value="convert">转换（映射色彩）</option>
@@ -389,7 +430,7 @@ function LayerColorOps({ layer }: { layer: LayerBase }) {
             </option>
           ))}
         </select>
-        <button className="small ghost" onClick={() => void loadProfiles()} title="重新扫描系统 profile">
+        <button className="small ghost" onClick={() => void loadProfiles(true)} title="强制重新扫描系统 profile">
           <Icon name="refresh" size={12} />
         </button>
       </div>

@@ -13,6 +13,7 @@ import { useShallow } from "zustand/react/shallow";
 
 export type StageId = "structure" | "content" | "color" | "proof" | "deliver";
 export type StageStatus = "locked" | "ready" | "done" | "issue";
+export type LoopVerdict = "idle" | "run" | "pass" | "fail" | "stale";
 
 export interface StageView {
   id: StageId;
@@ -51,12 +52,18 @@ function auditWarnings(s: EditorState): number {
 }
 
 /** 色彩闭环总体判定（状态栏胶囊 + ④ 横幅共用）。
- *  idle=未打样 · run=已模拟未测量 · pass=闭环通过 · fail=需修正 */
-export function loopVerdict(s: EditorState): "idle" | "run" | "pass" | "fail" {
+ *  idle=未打样 · run=已模拟未测量 · pass=闭环通过 · fail=需修正 · stale=内容/参数已改，旧结果过期 */
+export function loopVerdict(s: EditorState): LoopVerdict {
   if (!s.proofStats) {
     return "idle";
   }
+  if (s.proofStale) {
+    return "stale";
+  }
   if (s.verifyReport) {
+    if (s.verifyStale) {
+      return "stale";
+    }
     return s.verifyReport.passed ? "pass" : "fail";
   }
   return "run";
@@ -74,6 +81,7 @@ function view(
 /** 从 store 快照推导五阶段状态（RightPanel/FlowTracker/StatusBar 共用）。 */
 export function deriveStageViews(s: EditorState): Record<StageId, StageView> {
   const artwork = hasArtwork(s);
+  const verdict = loopVerdict(s);
 
   /* ① 盒型结构：退出条件 = 刀版生成且 14 项机械校验通过 */
   const structure = s.dieline
@@ -87,17 +95,14 @@ export function deriveStageViews(s: EditorState): Record<StageId, StageView> {
     : view("structure", "ready");
 
   /* ② 素材与审计：前置 = 刀版；退出条件 = 已有素材图层；审计有警告 → issue */
+  const artworkCount = s.layers.filter((l) => l.kind !== "proof" && l.kind !== "oog").length;
   const content = !s.dieline
     ? view("content", "locked", "", "先生成刀版（① 盒型），素材才有落位基准")
     : !artwork
       ? view("content", "ready", "")
       : auditWarnings(s) > 0
-        ? view("content", "issue", `${s.layers.filter((l) => l.kind !== "proof" && l.kind !== "oog").length} 图层 · 审计有警告`)
-        : view(
-            "content",
-            "done",
-            `${s.layers.filter((l) => l.kind !== "proof" && l.kind !== "oog").length} 图层${s.audit ? " · 已审计" : ""}`,
-          );
+        ? view("content", "issue", `${artworkCount} 图层 · 审计有警告`)
+        : view("content", "done", `${artworkCount} 图层${s.audit ? " · 已审计" : ""}`);
 
   /* ③ 色彩管理：配置型阶段，永远可用；选定输出档案即视为完成 */
   const chosenProfile = s.profiles.find((p) => p.path === s.deviceProfilePath);
@@ -105,7 +110,7 @@ export function deriveStageViews(s: EditorState): Record<StageId, StageView> {
     ? view("color", "done", chosenProfile?.description || "已选输出档案")
     : view("color", "ready", "未选输出档案");
 
-  /* ④ 打样验证：前置 = 素材 + 输出档案；verify 通过 → done，未通过 → issue */
+  /* ④ 打样验证：前置 = 素材 + 输出档案；过期或 verify 未通过 → issue */
   let proof: StageView;
   if (!artwork || !s.deviceProfilePath) {
     const reasons: string[] = [];
@@ -116,6 +121,8 @@ export function deriveStageViews(s: EditorState): Record<StageId, StageView> {
       reasons.push("先选择输出设备档案（③ 色彩）");
     }
     proof = view("proof", "locked", "", reasons.join("，"));
+  } else if (verdict === "stale") {
+    proof = view("proof", "issue", s.proofStale ? "打样已过期 · 需重跑" : "测量已过期 · 需重验");
   } else if (s.verifyReport) {
     proof = s.verifyReport.passed
       ? view("proof", "done", `ΔE00 均值 ${s.verifyReport.report.stats.mean.toFixed(2)} · 闭环通过`)
@@ -130,7 +137,11 @@ export function deriveStageViews(s: EditorState): Record<StageId, StageView> {
   const deliver = !s.dieline
     ? view("deliver", "locked", "", "先生成刀版（① 盒型）才有可交付产物")
     : s.exportCount > 0
-      ? view("deliver", "done", `已导出 ${s.exportCount} 次${loopVerdict(s) === "run" ? " · 建议先完成测量验证" : ""}`)
+      ? view(
+          "deliver",
+          "done",
+          `已导出 ${s.exportCount} 次${verdict === "run" ? " · 建议先完成测量验证" : verdict === "stale" ? " · 打样已过期" : ""}`,
+        )
       : view("deliver", "ready", "", "");
 
   return { structure, content, color, proof, deliver };
@@ -146,7 +157,9 @@ const FLOW_KEYS = [
   "audit",
   "deviceProfilePath",
   "proofStats",
+  "proofStale",
   "verifyReport",
+  "verifyStale",
   "exportCount",
   "profiles",
 ] as const;

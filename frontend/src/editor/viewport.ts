@@ -53,3 +53,21 @@ export function fitCamera(
     scale: clamped,
   };
 }
+
+/** 命中检测：判断世界坐标点是否落在可能带旋转的图层矩形内（与 renderer.ts 绕左上角旋转互逆）。 */
+export function pointInRotatedLayer(
+  world: Vec2,
+  layer: { x: number; y: number; w: number; h: number; rotation: number },
+): boolean {
+  const dx = world.x - layer.x;
+  const dy = world.y - layer.y;
+  if (!layer.rotation) {
+    return dx >= 0 && dx <= layer.w && dy >= 0 && dy <= layer.h;
+  }
+  const rad = (-layer.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const lx = dx * cos - dy * sin;
+  const ly = dx * sin + dy * cos;
+  return lx >= 0 && lx <= layer.w && ly >= 0 && ly <= layer.h;
+}

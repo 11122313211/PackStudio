@@ -1,4 +1,4 @@
-/** 中央画布区：场景渲染、标尺、适配窗口、空状态提示。 */
+/** 中央画布区：场景渲染、标尺、适配窗口、拖放导入与空状态提示。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useEditor } from "../store/editor";
@@ -6,7 +6,8 @@ import { contentBox, renderScene } from "../editor/renderer";
 import { getPalette } from "../editor/theme";
 import { fitCamera } from "../editor/viewport";
 import { useStageInteraction } from "../editor/stageInteraction";
-import { registerMainCanvas, getCleanCanvas } from "../editor/canvasRegistry";
+import { registerMainCanvas } from "../editor/canvasRegistry";
+import { importFiles } from "../editor/importFiles";
 import { PT_PER_MM } from "../editor/types";
 
 /** 玻璃框架遮挡的画布内缩（px），与 tokens.css 的 --toolbar-w / --rightbar-w /
@@ -19,6 +20,7 @@ export function CanvasStage() {
   const rulerXRef = useRef<HTMLCanvasElement>(null);
   const rulerYRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const [dragOver, setDragOver] = useState(false);
 
   const camera = useEditor((s) => s.camera);
   const dieline = useEditor((s) => s.dieline);
@@ -27,9 +29,9 @@ export function CanvasStage() {
   const guides = useEditor((s) => s.guides);
   const measure = useEditor((s) => s.measure);
   const showGrid = useEditor((s) => s.showGrid);
+  const units = useEditor((s) => s.units);
   const tool = useEditor((s) => s.tool);
   const fitRequest = useEditor((s) => s.fitRequest);
-  // 打样覆盖层必须订阅：否则打样完成后画布不重绘，覆盖层要等下一次缩放/平移才出现
   const proofImage = useEditor((s) => s.proofImage);
   const oogImage = useEditor((s) => s.oogImage);
   const proofVisible = useEditor((s) => s.proofVisible);
@@ -55,79 +57,23 @@ export function CanvasStage() {
     return () => ro.disconnect();
   }, []);
 
-  /* 渲染循环 */
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || size.w === 0) {
-      return;
-    }
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(size.w * dpr);
-    canvas.height = Math.floor(size.h * dpr);
-    canvas.style.width = `${size.w}px`;
-    canvas.style.height = `${size.h}px`;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      return;
-    }
-    const allGuides = guidePreview ? [...guides, guidePreview] : guides;
-    // 干净合成画布与主画布同尺寸，同步绘制无覆盖层场景（打样快照/展平导出用）
-    const clean = getCleanCanvas();
-    clean.width = canvas.width;
-    clean.height = canvas.height;
-    renderScene({
-      ctx,
-      camera,
-      dpr,
-      viewW: size.w,
-      viewH: size.h,
-      dieline,
-      layers,
-      selectionId,
-      guides: allGuides,
-      measure,
-      showGrid,
-      proofImage,
-      oogImage,
-      proofVisible,
-      oogVisible,
-      theme,
-      cleanCtx: clean.getContext("2d"),
-    });
-    drawRulers();
-  });
-
-  /* 适配窗口：fitRequest 变化或刀版内容尺寸变化（首次生成/换盒型/改尺寸） */
-  const lastFitKey = useRef("");
-  useEffect(() => {
-    if (size.w === 0) {
-      return;
-    }
-    const contentKey = dieline
-      ? `${Math.round(dieline.viewBox.w)}x${Math.round(dieline.viewBox.h)}`
-      : "none";
-    const key = `${fitRequest}:${contentKey}`;
-    if (key !== lastFitKey.current && (dieline || layers.length > 0)) {
-      const box = contentBox(dieline, layers);
-      setCamera(fitCamera(box, size.w, size.h, SHELL_INSET));
-      lastFitKey.current = key;
-    }
-  }, [fitRequest, dieline, layers, size, setCamera]);
-
   const drawRulers = useCallback(() => {
-    const state = useEditor.getState();
     const dpr = window.devicePixelRatio || 1;
-    const pt = state.units === "pt";
+    const pt = units === "pt";
     const unit = (mm: number) => (pt ? mm * PT_PER_MM : mm);
-    const palette = getPalette(state.theme);
+    const palette = getPalette(theme);
     const RULER = 24;
     // 顶部标尺
     const rx = rulerXRef.current;
     if (rx && size.w > 0) {
-      rx.width = Math.floor(size.w * dpr);
-      rx.height = Math.floor(RULER * dpr);
-      rx.style.width = `${size.w}px`;
-      rx.style.height = `${RULER}px`;
+      const targetW = Math.floor(size.w * dpr);
+      const targetH = Math.floor(RULER * dpr);
+      if (rx.width !== targetW || rx.height !== targetH) {
+        rx.width = targetW;
+        rx.height = targetH;
+        rx.style.width = `${size.w}px`;
+        rx.style.height = `${RULER}px`;
+      }
       const ctx = rx.getContext("2d");
       if (ctx) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -150,10 +96,14 @@ export function CanvasStage() {
     // 左侧标尺
     const ry = rulerYRef.current;
     if (ry && size.h > 0) {
-      ry.width = Math.floor(RULER * dpr);
-      ry.height = Math.floor(size.h * dpr);
-      ry.style.width = `${RULER}px`;
-      ry.style.height = `${size.h}px`;
+      const targetW = Math.floor(RULER * dpr);
+      const targetH = Math.floor(size.h * dpr);
+      if (ry.width !== targetW || ry.height !== targetH) {
+        ry.width = targetW;
+        ry.height = targetH;
+        ry.style.width = `${RULER}px`;
+        ry.style.height = `${size.h}px`;
+      }
       const ctx = ry.getContext("2d");
       if (ctx) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -177,7 +127,99 @@ export function CanvasStage() {
         }
       }
     }
-  }, [camera, size, rulerXRef, rulerYRef]);
+  }, [camera, size, units, theme]);
+
+  /* 精确依赖的渲染循环：仅当画布尺寸/dpr 变化时重设 backing store，不再双绘 cleanCanvas */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || size.w === 0) {
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.floor(size.w * dpr);
+    const targetH = Math.floor(size.h * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      canvas.style.width = `${size.w}px`;
+      canvas.style.height = `${size.h}px`;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    const allGuides = guidePreview ? [...guides, guidePreview] : guides;
+    renderScene({
+      ctx,
+      camera,
+      dpr,
+      viewW: size.w,
+      viewH: size.h,
+      dieline,
+      layers,
+      selectionId,
+      guides: allGuides,
+      measure,
+      showGrid,
+      proofImage,
+      oogImage,
+      proofVisible,
+      oogVisible,
+      theme,
+    });
+    drawRulers();
+  }, [
+    size,
+    camera,
+    dieline,
+    layers,
+    selectionId,
+    guides,
+    guidePreview,
+    measure,
+    showGrid,
+    proofImage,
+    oogImage,
+    proofVisible,
+    oogVisible,
+    theme,
+    drawRulers,
+  ]);
+
+  /* 适配窗口：fitRequest 变化或刀版内容尺寸变化（首次生成/换盒型/改尺寸） */
+  const lastFitKey = useRef("");
+  useEffect(() => {
+    if (size.w === 0) {
+      return;
+    }
+    const contentKey = dieline
+      ? `${Math.round(dieline.viewBox.w)}x${Math.round(dieline.viewBox.h)}`
+      : "none";
+    const key = `${fitRequest}:${contentKey}`;
+    if (key !== lastFitKey.current && (dieline || layers.length > 0)) {
+      const box = contentBox(dieline, layers);
+      setCamera(fitCamera(box, size.w, size.h, SHELL_INSET));
+      lastFitKey.current = key;
+    }
+  }, [fitRequest, dieline, layers, size, setCamera]);
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+    const st = useEditor.getState();
+    st.setStage("content");
+    void importFiles(files, {
+      addLayers: st.addLayers,
+      dieline: st.dieline,
+      setBusy: st.setBusy,
+      setAudit: st.setAudit,
+      toast: st.toast,
+    });
+  };
 
   const cursorCss =
     panCursor || tool === "pan"
@@ -188,7 +230,7 @@ export function CanvasStage() {
 
   return (
     <section className="stage">
-      <div className="ruler-corner">mm</div>
+      <div className="ruler-corner">{units}</div>
       <canvas
         className="ruler-x"
         ref={rulerXRef}
@@ -215,7 +257,22 @@ export function CanvasStage() {
         }}
         onPointerUp={() => onRulerUp()}
       />
-      <div className="canvas-wrap" ref={wrapRef}>
+      <div
+        className={"canvas-wrap" + (dragOver ? " drag-over" : "")}
+        ref={wrapRef}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!dragOver) {
+            setDragOver(true);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget === e.target) {
+            setDragOver(false);
+          }
+        }}
+        onDrop={handleDrop}
+      >
         <canvas
           ref={(el) => {
             (canvasRef as { current: HTMLCanvasElement | null }).current = el;
@@ -225,7 +282,6 @@ export function CanvasStage() {
         />
         {!dieline && layers.length === 0 ? (
           <div className="stage-hint">
-            {/* 迷你刀版图样：切线红实线 + 压线青虚线，与画布刀线配色一致 */}
             <svg className="sh-glyph" width="46" height="36" viewBox="0 0 46 36" aria-hidden="true">
               <path
                 d="M15.5 6.5 H2 Q0.5 6.5 0.5 8 V32 Q0.5 33.5 2 33.5 H44 Q45.5 33.5 45.5 32 V8 Q45.5 6.5 44 6.5 H30.5"
@@ -248,7 +304,7 @@ export function CanvasStage() {
               <i>→</i>
               <span>软打样 · 导出</span>
             </div>
-            <span className="sh-sub">在右侧「盒型与参数」开始，或从顶栏导入 PDF / 图片</span>
+            <span className="sh-sub">在右侧「盒型结构」开始，或直接将 PDF / 图片拖入画布</span>
           </div>
         ) : null}
       </div>

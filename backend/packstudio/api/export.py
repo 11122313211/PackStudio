@@ -1,4 +1,4 @@
-"""导出 API：POST /api/export（刀版六格式）+ 下载（GET /api/download）。"""
+"""导出 API：POST /api/export（刀版五格式）+ 下载（GET /api/download）。"""
 
 from __future__ import annotations
 

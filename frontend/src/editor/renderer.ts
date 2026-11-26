@@ -1,6 +1,6 @@
-/** 画布渲染器：把图层/刀版/参考线/测量绘制到 2D 上下文。纯函数，无 DOM 依赖。 */
+/** 画布渲染器：把图层/刀版/参考线/测量绘制到 2D 上下文，并提供按需离屏高清渲染。 */
 
-import type { Camera, Guide, LayerBase, MeasureState, ParsedDieline } from "./types";
+import type { Camera, Guide, LayerBase, MeasureState, ParsedDieline, Vec2 } from "./types";
 import type { ThemeName } from "./theme";
 import { getPalette } from "./theme";
 import { worldToScreen } from "./viewport";
@@ -35,17 +35,35 @@ export interface RenderInput {
   selectionId: string | null;
   guides: Guide[];
   measure: MeasureState;
-  /** 参考网格开关（1mm 细网格） */
+  /** 参考网格开关（10mm 细网格） */
   showGrid: boolean;
-  /** 打样/越界覆盖图（内容盒裁剪位图，画在刀版之下、参考线之上） */
+  /** 打样/越界覆盖图（内容盒离屏位图，画在刀版之下、参考线之上） */
   proofImage: ImageBitmap | null;
   oogImage: ImageBitmap | null;
   proofVisible: boolean;
   oogVisible: boolean;
   /** 主题（决定井底/纸张描边/网格/度量气泡/参考线颜色） */
   theme: ThemeName;
-  /** 可选第二上下文：同步绘制不含任何覆盖层的干净合成（打样快照/展平导出用） */
-  cleanCtx?: CanvasRenderingContext2D | null;
+}
+
+/** 离屏渲染配置（软打样快照 / 高清展平导出共用，完全脱离屏幕视口裁切）。 */
+export interface OffscreenRenderOptions {
+  dieline: ParsedDieline | null;
+  layers: LayerBase[];
+  /** 目标导出 DPI；若仅指定 maxEdgePx，按最大边自动计算分辨率 */
+  dpi?: number;
+  /** 长边最大像素限制（默认 12000，软打样建议 2048） */
+  maxEdgePx?: number;
+  /** 是否把矢量刀版绘制到离屏输出（软打样应为 false，避免刀线污染 ΔE 越界统计） */
+  includeDieline: boolean;
+}
+
+export interface OffscreenRenderResult {
+  canvas: HTMLCanvasElement;
+  width: number;
+  height: number;
+  effectiveDpi: number;
+  clamped: boolean;
 }
 
 /** 内容包围盒：刀版优先，其次图层联合。 */
@@ -85,7 +103,12 @@ function drawSheet(
   ctx.strokeRect(a.x + 0.5, a.y + 0.5, b.x - a.x - 1, b.y - a.y - 1);
 }
 
-function drawDieline(ctx: CanvasRenderingContext2D, dieline: ParsedDieline, camera: Camera): void {
+function drawDieline(
+  ctx: CanvasRenderingContext2D,
+  dieline: ParsedDieline,
+  camera: Camera,
+  lineWidthScale = 1,
+): void {
   ctx.save();
   ctx.lineCap = "round";
   for (const seg of dieline.segments) {
@@ -93,7 +116,7 @@ function drawDieline(ctx: CanvasRenderingContext2D, dieline: ParsedDieline, came
     const p1 = worldToScreen({ x: seg.x1, y: seg.y1 }, camera);
     const p2 = worldToScreen({ x: seg.x2, y: seg.y2 }, camera);
     ctx.strokeStyle = spec.stroke;
-    ctx.lineWidth = spec.width;
+    ctx.lineWidth = spec.width * lineWidthScale;
     ctx.setLineDash(spec.dash.map((d) => d * Math.max(1, camera.scale / 3)));
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
@@ -116,7 +139,7 @@ function drawPanelRects(ctx: CanvasRenderingContext2D, dieline: ParsedDieline, c
   ctx.restore();
 }
 
-/** 打样/越界覆盖图：内容盒快照按同一屏幕矩形贴回（与 ProofPanel 的裁剪一一对应）。 */
+/** 打样/越界覆盖图：按世界内容盒精确贴回画布（与离屏打样完全对齐）。 */
 function drawOverlays(
   ctx: CanvasRenderingContext2D,
   camera: Camera,
@@ -144,15 +167,13 @@ function drawOverlays(
   }
 }
 
-function drawLayers(
+function drawArtworkLayers(
   ctx: CanvasRenderingContext2D,
   layers: LayerBase[],
   camera: Camera,
-  selectionId: string | null,
-  palette: ReturnType<typeof getPalette>,
 ): void {
   for (const layer of layers) {
-    if (!layer.visible || !layer.bitmap) {
+    if (!layer.visible || !layer.bitmap || layer.kind === "proof" || layer.kind === "oog") {
       continue;
     }
     const origin = worldToScreen({ x: layer.x, y: layer.y }, camera);
@@ -165,19 +186,33 @@ function drawLayers(
     ctx.drawImage(layer.bitmap as CanvasImageSource, 0, 0, layer.w * camera.scale, layer.h * camera.scale);
     ctx.restore();
   }
-  if (selectionId) {
-    const sel = layers.find((l) => l.id === selectionId);
-    if (sel) {
-      const a = worldToScreen({ x: sel.x, y: sel.y }, camera);
-      const b = worldToScreen({ x: sel.x + sel.w, y: sel.y + sel.h }, camera);
-      ctx.save();
-      ctx.strokeStyle = palette.accent;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 3]);
-      ctx.strokeRect(a.x - 2, a.y - 2, b.x - a.x + 4, b.y - a.y + 4);
-      ctx.restore();
-    }
+}
+
+function drawSelectionBox(
+  ctx: CanvasRenderingContext2D,
+  layers: LayerBase[],
+  camera: Camera,
+  selectionId: string | null,
+  palette: ReturnType<typeof getPalette>,
+): void {
+  if (!selectionId) {
+    return;
   }
+  const sel = layers.find((l) => l.id === selectionId);
+  if (!sel) {
+    return;
+  }
+  const origin = worldToScreen({ x: sel.x, y: sel.y }, camera);
+  ctx.save();
+  ctx.translate(origin.x, origin.y);
+  if (sel.rotation) {
+    ctx.rotate((sel.rotation * Math.PI) / 180);
+  }
+  ctx.strokeStyle = palette.accent;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(-2, -2, sel.w * camera.scale + 4, sel.h * camera.scale + 4);
+  ctx.restore();
 }
 
 function drawGuides(
@@ -244,12 +279,13 @@ function drawMeasure(
   ctx.restore();
 }
 
-/** 场景本体（无任何覆盖层）：底色+纸张+网格+面板+图层。打样快照与展平导出取同一绘制序列。 */
-function drawScene(ctx: CanvasRenderingContext2D, input: RenderInput): void {
-  const { camera, viewW, viewH, dieline, layers } = input;
+export function renderScene(input: RenderInput): void {
+  const { ctx, dpr, camera, viewW, viewH, dieline, layers } = input;
   const palette = getPalette(input.theme);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = palette.well;
   ctx.fillRect(0, 0, viewW, viewH);
+
   const box = contentBox(dieline, layers);
   drawSheet(ctx, box, camera, palette);
   if (input.showGrid) {
@@ -258,38 +294,102 @@ function drawScene(ctx: CanvasRenderingContext2D, input: RenderInput): void {
   if (dieline) {
     drawPanelRects(ctx, dieline, camera);
   }
-  drawLayers(ctx, layers, camera, input.selectionId, palette);
-}
+  drawArtworkLayers(ctx, layers, camera);
 
-export function renderScene(input: RenderInput): void {
-  const { ctx, dpr } = input;
-  const palette = getPalette(input.theme);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  drawScene(ctx, input);
   // 覆盖层在刀版之下：切/压/糊线始终可见
   drawOverlays(
     ctx,
-    input.camera,
-    input.dieline,
-    input.layers,
+    camera,
+    dieline,
+    layers,
     input.proofImage,
     input.oogImage,
     input.proofVisible,
     input.oogVisible,
   );
-  if (input.dieline) {
-    drawDieline(ctx, input.dieline, input.camera);
+  if (dieline) {
+    drawDieline(ctx, dieline, camera);
   }
-  drawGuides(ctx, input.guides, input.camera, input.viewW, input.viewH, palette);
-  drawMeasure(ctx, input.measure, input.camera, palette);
+  drawSelectionBox(ctx, layers, camera, input.selectionId, palette);
+  drawGuides(ctx, input.guides, camera, viewW, viewH, palette);
+  drawMeasure(ctx, input.measure, camera, palette);
+}
 
-  // 干净合成（供打样快照/展平导出）：仅场景本体，绝不含覆盖层与 UI 元素
-  const clean = input.cleanCtx;
-  if (clean) {
-    clean.setTransform(dpr, 0, 0, dpr, 0, 0);
-    clean.clearRect(0, 0, input.viewW, input.viewH);
-    drawScene(clean, input);
+/** 按世界坐标内容盒离屏高清渲染（软打样快照 / 展平导出专用）。
+ *
+ *  特点：
+ *  - 永远不依赖当前屏幕视口缩放/平移，绝无裁切错位；
+ *  - 绝不混入网格、面板虚线框、图层选中框或井底背景；
+ *  - 按目标 DPI 矢量重绘刀版 + 原分辨率重绘位图素材。
+ */
+export function renderOffscreen(opts: OffscreenRenderOptions): OffscreenRenderResult | null {
+  const artworkLayers = opts.layers.filter((l) => l.kind !== "proof" && l.kind !== "oog");
+  const box = contentBox(opts.dieline, artworkLayers);
+  if (box.w <= 0 || box.h <= 0) {
+    return null;
   }
+
+  const maxEdge = opts.maxEdgePx ?? 12000;
+  let pxPerMm = opts.dpi ? opts.dpi / 25.4 : maxEdge / Math.max(box.w, box.h);
+  let clamped = false;
+  if (box.w * pxPerMm > maxEdge || box.h * pxPerMm > maxEdge) {
+    pxPerMm = maxEdge / Math.max(box.w, box.h);
+    clamped = true;
+  }
+
+  const width = Math.max(1, Math.round(box.w * pxPerMm));
+  const height = Math.max(1, Math.round(box.h * pxPerMm));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return null;
+  }
+
+  // 纯白纸面底色（印刷底材）
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+
+  const offCam: Camera = { x: box.x, y: box.y, scale: pxPerMm };
+  drawArtworkLayers(ctx, artworkLayers, offCam);
+
+  if (opts.includeDieline && opts.dieline) {
+    // 以 96 DPI (~3.78 px/mm) 为参考基准按比例缩放线宽，高 DPI 下刀线保持清晰可读
+    const lwScale = Math.max(1, pxPerMm / (96 / 25.4));
+    drawDieline(ctx, opts.dieline, offCam, lwScale);
+  }
+
+  return {
+    canvas,
+    width,
+    height,
+    effectiveDpi: Math.round(pxPerMm * 25.4),
+    clamped,
+  };
+}
+
+/** 离屏采样单个世界坐标处的干净素材 RGB（排除越界掩图/打样层/刀线/网格/选框干扰）。 */
+export function sampleArtworkPixel(world: Vec2, layers: LayerBase[]): [number, number, number] {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    return [255, 255, 255];
+  }
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, 1, 1);
+  // scale=4 采样 0.25mm 精度，将目标 world 点对齐到像素中心 (0.5, 0.5)
+  const scale = 4;
+  const cam: Camera = {
+    x: world.x - 0.5 / scale,
+    y: world.y - 0.5 / scale,
+    scale,
+  };
+  drawArtworkLayers(ctx, layers, cam);
+  const px = ctx.getImageData(0, 0, 1, 1).data;
+  return [px[0], px[1], px[2]];
 }
 
 function drawGrid(
@@ -301,8 +401,6 @@ function drawGrid(
   palette: ReturnType<typeof getPalette>,
 ): void {
   ctx.save();
-  // 网格只画在纸张盒内（纸面恒白，网格是"纸上的浅纹"）：
-  // 修掉旧版全屏绘制 —— 深色井底会出现浅色网格线，浅色井底上原本也几乎不可见。
   const pa = worldToScreen({ x: box.x, y: box.y }, camera);
   const pb = worldToScreen({ x: box.x + box.w, y: box.y + box.h }, camera);
   ctx.beginPath();
