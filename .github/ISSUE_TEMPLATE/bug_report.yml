@@ -1,0 +1,48 @@
+name: 缺陷反馈（Bug Report）
+description: 反馈刀版生成、色彩引擎、软打样、导出或界面交互中的异常问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰简洁地描述遇到的异常现象与预期行为。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 所属模块 / 阶段
+      options:
+        - ① 盒型结构（刀版 / 机械校验 / 3D 折叠）
+        - ② 素材与审计（PDF / 图片导入 / 图层 / ICC 转换）
+        - ③ 色彩管理（系统 ICC / 体检 / 吸管取色）
+        - ④ 打样验证（离屏软打样 / 越界掩图 / CGATS 验证）
+        - ⑤ 输出交付（SVG / DXF / PDF / CF2 / 展平 PNG）
+        - 安装启动 / 运行环境
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 选择盒型与尺寸（如 直线盒 90×50×130mm）
+        2. 执行操作 ...
+        3. 观察到报错 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 运行环境
+      placeholder: |
+        - 操作系统：Windows 11 / macOS / Linux
+        - Python 版本：3.12 / 3.14
+        - 浏览器：Chrome / Edge / Safari
+    validations:
+      required: false

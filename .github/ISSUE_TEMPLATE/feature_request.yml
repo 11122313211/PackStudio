@@ -1,0 +1,28 @@
+name: 功能建议（Feature Request）
+description: 提议新盒型、色彩管理能力、导出格式或工作流体验优化
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: 需求背景与痛点
+      description: 描述你在包装结构设计或印前色彩管理中遇到的真实场景。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案
+      description: 简述你希望 PackStudio 提供的交互或输出效果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: 参考标准 / 资料（可选）
+      placeholder: 例如 ECMA / FEFCO 编号、ISO 12647-2 规范或示例样张。
+    validations:
+      required: false
